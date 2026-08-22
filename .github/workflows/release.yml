@@ -1,0 +1,188 @@
+# Covenant release — runs on the PUBLIC repository (lucheeseng827/covenant).
+#
+# Synced from the source repository as .github/workflows/release.yml. Edit it at
+# ops/release.yml in the source tree, not here on the mirror: the next sync
+# overwrites the mirror copy.
+#
+# Builds the multi-arch image and pushes it to Docker Hub, then refreshes the
+# Docker Hub repository overview from docs/DOCKERHUB.md so the description never
+# drifts from the release it documents.
+#
+# This repository IS the standalone crate, so the build context is the repository
+# root and the Dockerfile works exactly as it does for anyone cloning.
+#
+# Triggers:
+#   - push a tag `v*`                 -> build + push mancube/covenant:<version> + :latest
+#   - manual run (workflow_dispatch)  -> build only (dry-run); set push=true to publish
+#
+# Required repository secrets (add them on THIS repository, under
+# Settings -> Secrets and variables -> Actions):
+#   DOCKER_USERNAME   the Docker Hub account that owns mancube/covenant
+#   DOCKER_PASSWORD   a Docker Hub access token with Read/Write on mancube/covenant
+#
+# Without them the build still runs; only the push and the description update are
+# skipped, so a fork or a contributor's dry run is never blocked on credentials.
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Image version (e.g. 0.1.0)"
+        required: true
+      push:
+        description: "Push to Docker Hub (false = build only, a dry-run)"
+        type: boolean
+        default: false
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: mancube/covenant
+  PLATFORMS: linux/amd64,linux/arm64
+
+jobs:
+  image:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Resolve version + push decision
+        id: cfg
+        env:
+          EVENT: ${{ github.event_name }}
+          DISPATCH_VERSION: ${{ inputs.version }}
+          DISPATCH_PUSH: ${{ inputs.push }}
+          REF_NAME: ${{ github.ref_name }}
+          HAS_CREDS: ${{ secrets.DOCKER_USERNAME != '' && secrets.DOCKER_PASSWORD != '' }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            V="$DISPATCH_VERSION"; PUSH="$DISPATCH_PUSH"
+          else
+            V="${REF_NAME#v}"          # v0.1.0 -> 0.1.0
+            PUSH="true"
+          fi
+          if ! [[ "$V" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.+-]+)?$ ]]; then
+            echo "::error::invalid version: '$V'"; exit 1
+          fi
+          # Never fail a run that simply has no credentials — build, skip the push.
+          if [ "$PUSH" = "true" ] && [ "$HAS_CREDS" != "true" ]; then
+            echo "::warning::DOCKER_USERNAME / DOCKER_PASSWORD are not set on this repository; building without pushing."
+            PUSH="false"
+          fi
+          # A pre-release must never claim :latest.
+          case "$V" in *-*) LATEST="false" ;; *) LATEST="true" ;; esac
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "push=$PUSH"  >> "$GITHUB_OUTPUT"
+          echo "latest=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "Version $V, push=$PUSH, tag latest=$LATEST"
+
+      - name: Assert the tag matches the crate version
+        env:
+          V: ${{ steps.cfg.outputs.version }}
+        run: |
+          set -euo pipefail
+          CRATE="$(grep -m1 -E '^version[[:space:]]*=' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')"
+          [ "$CRATE" = "$V" ] || { echo "::error::version '$V' != crate version '$CRATE'"; exit 1; }
+          echo "Version matches the crate: $CRATE"
+
+      - uses: docker/setup-qemu-action@49b3bc8e6bdd4a60e6116a5414239cba5943d3cf # v3.2.0
+      - uses: docker/setup-buildx-action@c47758b77c9736f4b2ef4073d4d51994fabfe349 # v3.7.1
+
+      - name: Compute image tags
+        id: tags
+        env:
+          V: ${{ steps.cfg.outputs.version }}
+          LATEST: ${{ steps.cfg.outputs.latest }}
+        run: |
+          set -euo pipefail
+          {
+            echo "list<<EOF"
+            echo "${IMAGE}:${V}"
+            [ "$LATEST" = "true" ] && echo "${IMAGE}:latest"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Log in to Docker Hub
+        if: steps.cfg.outputs.push == 'true'
+        uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Build (and push on a tag) the multi-arch image
+        uses: docker/build-push-action@48aba3b46d1b1fec4febb7c5d0c644b249a11355 # v6.10.0
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: ${{ env.PLATFORMS }}
+          push: ${{ steps.cfg.outputs.push == 'true' }}
+          tags: ${{ steps.tags.outputs.list }}
+          # Keep the manifest a plain multi-arch image (no attestation manifest
+          # that some runtimes choke on).
+          provenance: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke-test the pushed image
+        if: steps.cfg.outputs.push == 'true'
+        env:
+          V: ${{ steps.cfg.outputs.version }}
+        run: |
+          set -euo pipefail
+          # Exercise the image the way the overview documents it: lint a contract,
+          # pass clean data, fail dirty data with exit 1. An image that cannot do
+          # this is not shippable, and finding out later is worse.
+          docker run --rm -v "$PWD:/w" "${IMAGE}:${V}" \
+            validate /w/examples/contracts/orders.yaml
+          docker run --rm -v "$PWD:/w" "${IMAGE}:${V}" \
+            check /w/examples/data/orders.ndjson -c /w/examples/contracts/orders.yaml
+          set +e
+          docker run --rm -v "$PWD:/w" "${IMAGE}:${V}" \
+            check /w/examples/data/orders_bad.ndjson -c /w/examples/contracts/orders.yaml
+          code=$?
+          set -e
+          [ "$code" = "1" ] || { echo "::error::image exited $code on violating data, expected 1"; exit 1; }
+          echo "Image smoke test passed."
+
+      # The Docker Hub overview is the first thing most people read, and a stale
+      # one is worse than none: it documents tags and flags that may no longer
+      # exist. Refresh it from the doc that ships with this release.
+      - name: Refresh the Docker Hub repository overview
+        if: steps.cfg.outputs.push == 'true' && steps.cfg.outputs.latest == 'true'
+        uses: peter-evans/dockerhub-description@e98e4d1628a5f3be2be7c231e50981aee98723ae # v4.0.0
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+          repository: ${{ env.IMAGE }}
+          short-description: "Data-contract enforcement runtime: run your contracts at every boundary. One static binary, Apache-2.0."
+          readme-filepath: ./docs/DOCKERHUB.md
+
+      - name: Summary
+        env:
+          V: ${{ steps.cfg.outputs.version }}
+          PUSH: ${{ steps.cfg.outputs.push }}
+          LATEST: ${{ steps.cfg.outputs.latest }}
+        run: |
+          {
+            if [ "$PUSH" = "true" ]; then
+              echo "Pushed \`${IMAGE}:${V}\`$([ "$LATEST" = "true" ] && echo " and \`${IMAGE}:latest\`") (${PLATFORMS})."
+              echo ""
+              echo '```bash'
+              echo "docker run --rm -v \$PWD:/w ${IMAGE}:${V} check /w/orders.ndjson -c /w/orders.yaml"
+              echo '```'
+            else
+              echo "Dry-run: built \`${IMAGE}:${V}\` (${PLATFORMS}), not pushed."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
