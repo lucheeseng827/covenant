@@ -121,7 +121,9 @@ impl StatsSink {
             recent: VecDeque::with_capacity(RECENT_BUCKETS + 1),
             // Backdated so the very first record triggers a write — a
             // just-started gate should become visible immediately.
-            last_write: Instant::now().checked_sub(WRITE_EVERY).unwrap_or_else(Instant::now),
+            last_write: Instant::now()
+                .checked_sub(WRITE_EVERY)
+                .unwrap_or_else(Instant::now),
             broken: false,
         }
     }
@@ -457,7 +459,7 @@ pub fn run_with_stats<R: BufRead, W: Write, D: Write>(
     dlq.flush().map_err(io_err)?;
     // Final snapshot so the file always reflects the finished run, even for
     // short streams that never crossed the write interval.
-    if let Some(s) = sink.as_deref_mut() {
+    if let Some(s) = sink {
         s.write(&stats);
     }
 
@@ -486,7 +488,15 @@ mod tests {
         let model = contract.resolve_model(None).unwrap();
         let mut out = Vec::new();
         let mut dlq = Vec::new();
-        let outcome = run(&contract, model, Cursor::new(input), &mut out, &mut dlq, true).unwrap();
+        let outcome = run(
+            &contract,
+            model,
+            Cursor::new(input),
+            &mut out,
+            &mut dlq,
+            true,
+        )
+        .unwrap();
         (outcome, out, dlq)
     }
 
@@ -586,7 +596,10 @@ mod tests {
         assert!(rules.contains(&"record_not_object"), "{rules:?}");
         assert!(snapshot["p99_validate_micros"].as_f64().is_some());
         assert!(!snapshot["recent"].as_array().unwrap().is_empty());
-        assert!(!path.with_extension("tmp").exists(), "tmp file must be renamed away");
+        assert!(
+            !path.with_extension("tmp").exists(),
+            "tmp file must be renamed away"
+        );
     }
 
     /// Invalid UTF-8 *inside a quoted JSON string* must not be lossy-repaired

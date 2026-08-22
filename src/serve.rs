@@ -102,10 +102,13 @@ pub fn run(addr: &str, state: AppState) -> Result<()> {
         source: e,
     })?;
     rt.block_on(async move {
-        let listener = tokio::net::TcpListener::bind(addr).await.map_err(|e| CovenantError::Io {
-            path: addr.to_string(),
-            source: e,
-        })?;
+        let listener =
+            tokio::net::TcpListener::bind(addr)
+                .await
+                .map_err(|e| CovenantError::Io {
+                    path: addr.to_string(),
+                    source: e,
+                })?;
         eprintln!(
             "covenant serve: console at http://{addr}/ — contract {} v{}, model {}",
             state.doc.id, state.doc.version, state.model
@@ -173,7 +176,10 @@ async fn validate(body: String) -> impl IntoResponse {
         Ok(doc) => {
             let findings = doc.lint();
             let enforceable = doc.is_enforceable();
-            (StatusCode::OK, Json(json!({ "findings": findings, "enforceable": enforceable })))
+            (
+                StatusCode::OK,
+                Json(json!({ "findings": findings, "enforceable": enforceable })),
+            )
         }
         Err(e) => (
             StatusCode::BAD_REQUEST,
@@ -210,7 +216,10 @@ async fn check(State(state): State<Arc<AppState>>, body: String) -> impl IntoRes
                 },
                 rows,
             );
-            (StatusCode::OK, Json(serde_json::to_value(&report).expect("report serializes")))
+            (
+                StatusCode::OK,
+                Json(serde_json::to_value(&report).expect("report serializes")),
+            )
         }
         Err(e) => (
             StatusCode::BAD_REQUEST,
@@ -247,7 +256,10 @@ async fn consumers_verify(
         match crate::consumers::ConsumerManifest::parse(src, &format!("<manifests[{i}]>")) {
             Ok(m) => manifests.push(m),
             Err(e) => {
-                return (StatusCode::BAD_REQUEST, Json(json!({ "error": e.to_string() })));
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": e.to_string() })),
+                );
             }
         }
     }
@@ -430,13 +442,19 @@ async fn diff(Json(body): Json<DiffBody>) -> impl IntoResponse {
     let old = match Contract::parse(&body.old, "<old>") {
         Ok(c) => c,
         Err(e) => {
-            return (StatusCode::BAD_REQUEST, Json(json!({ "error": e.to_string() })));
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": e.to_string() })),
+            );
         }
     };
     let new = match Contract::parse(&body.new, "<new>") {
         Ok(c) => c,
         Err(e) => {
-            return (StatusCode::BAD_REQUEST, Json(json!({ "error": e.to_string() })));
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": e.to_string() })),
+            );
         }
     };
     let mut report = crate::diff::diff(&old, &new);
@@ -446,11 +464,17 @@ async fn diff(Json(body): Json<DiffBody>) -> impl IntoResponse {
             match crate::consumers::ConsumerManifest::parse(src, &format!("<consumers[{i}]>")) {
                 Ok(m) => manifests.push(m),
                 Err(e) => {
-                    return (StatusCode::BAD_REQUEST, Json(json!({ "error": e.to_string() })));
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({ "error": e.to_string() })),
+                    );
                 }
             }
         }
         crate::consumers::annotate(&mut report, &old, &new, &manifests);
     }
-    (StatusCode::OK, Json(serde_json::to_value(&report).expect("diff serializes")))
+    (
+        StatusCode::OK,
+        Json(serde_json::to_value(&report).expect("diff serializes")),
+    )
 }

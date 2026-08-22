@@ -138,7 +138,11 @@ fn tightened_bound_hits_producers_loosened_hits_consumers() {
 "#,
     );
     let report = diff(&base("1.0.0"), &tightened);
-    let c = report.changes.iter().find(|c| c.message.contains("min tightened")).unwrap();
+    let c = report
+        .changes
+        .iter()
+        .find(|c| c.message.contains("min tightened"))
+        .unwrap();
     assert_eq!((c.severity, c.impact), (Severity::Risky, Impact::Producers));
 
     let loosened = contract(
@@ -150,7 +154,11 @@ fn tightened_bound_hits_producers_loosened_hits_consumers() {
 "#,
     );
     let report = diff(&base("1.0.0"), &loosened);
-    let c = report.changes.iter().find(|c| c.message.contains("max loosened")).unwrap();
+    let c = report
+        .changes
+        .iter()
+        .find(|c| c.message.contains("max loosened"))
+        .unwrap();
     assert_eq!((c.severity, c.impact), (Severity::Risky, Impact::Consumers));
 }
 
@@ -165,7 +173,11 @@ fn allowed_set_narrow_vs_widen() {
 "#,
     );
     let report = diff(&base("1.0.0"), &narrowed);
-    let c = report.changes.iter().find(|c| c.message.contains("narrowed")).unwrap();
+    let c = report
+        .changes
+        .iter()
+        .find(|c| c.message.contains("narrowed"))
+        .unwrap();
     assert_eq!(c.impact, Impact::Producers);
 
     let widened = contract(
@@ -177,7 +189,11 @@ fn allowed_set_narrow_vs_widen() {
 "#,
     );
     let report = diff(&base("1.0.0"), &widened);
-    let c = report.changes.iter().find(|c| c.message.contains("widened")).unwrap();
+    let c = report
+        .changes
+        .iter()
+        .find(|c| c.message.contains("widened"))
+        .unwrap();
     assert_eq!(c.impact, Impact::Consumers);
 }
 
@@ -197,13 +213,19 @@ fn nullability_and_requiredness_transitions() {
         .iter()
         .find(|c| c.message.contains("became nullable"))
         .unwrap();
-    assert_eq!((nullable.severity, nullable.impact), (Severity::Breaking, Impact::Consumers));
+    assert_eq!(
+        (nullable.severity, nullable.impact),
+        (Severity::Breaking, Impact::Consumers)
+    );
     let required = report
         .changes
         .iter()
         .find(|c| c.message.contains("became required"))
         .unwrap();
-    assert_eq!((required.severity, required.impact), (Severity::Breaking, Impact::Producers));
+    assert_eq!(
+        (required.severity, required.impact),
+        (Severity::Breaking, Impact::Producers)
+    );
 }
 
 #[test]
@@ -302,7 +324,10 @@ fn prerelease_iteration_tolerates_breaking_changes() {
     );
     let report = diff(&old, &new);
     assert!(
-        report.changes.iter().any(|c| c.severity == Severity::Breaking),
+        report
+            .changes
+            .iter()
+            .any(|c| c.severity == Severity::Breaking),
         "field removal is still reported"
     );
     assert!(
@@ -416,7 +441,10 @@ fn info_change_needs_any_bump() {
 #[test]
 fn deprecation_transitions_are_info_level_consumer_signals() {
     let old = contract("1.0.0", "      a: { type: string }\n");
-    let new = contract("1.0.1", "      a: { type: string, deprecated: \"use b\" }\n");
+    let new = contract(
+        "1.0.1",
+        "      a: { type: string, deprecated: \"use b\" }\n",
+    );
     let report = diff(&old, &new);
     let dep = report
         .changes
@@ -431,7 +459,10 @@ fn deprecation_transitions_are_info_level_consumer_signals() {
     let old = contract("1.0.0", "      a: { type: string, deprecated: true }\n");
     let new = contract("1.0.1", "      a: { type: string }\n");
     let report = diff(&old, &new);
-    assert!(report.changes.iter().any(|c| c.message.contains("no longer deprecated")));
+    assert!(report
+        .changes
+        .iter()
+        .any(|c| c.message.contains("no longer deprecated")));
 }
 
 #[test]
@@ -444,25 +475,48 @@ fn removing_a_deprecated_field_is_still_breaking_but_says_so() {
         .iter()
         .find(|c| c.message.contains("field removed"))
         .expect("removal change");
-    assert_eq!(removal.severity, Severity::Breaking, "deprecation never licenses a break");
-    assert!(removal.message.contains("(was deprecated)"), "{}", removal.message);
+    assert_eq!(
+        removal.severity,
+        Severity::Breaking,
+        "deprecation never licenses a break"
+    );
+    assert!(
+        removal.message.contains("(was deprecated)"),
+        "{}",
+        removal.message
+    );
 }
 
 #[test]
 fn a_changed_deprecation_note_is_reported_to_consumers() {
     // Readers planning a migration against the old guidance need to hear
     // the new guidance — the note change is info-level but consumer-facing.
-    let old = contract("1.1.0", "      email: { type: string, deprecated: \"use b\" }\n");
-    let new = contract("1.1.1", "      email: { type: string, deprecated: \"use contact_id\" }\n");
+    let old = contract(
+        "1.1.0",
+        "      email: { type: string, deprecated: \"use b\" }\n",
+    );
+    let new = contract(
+        "1.1.1",
+        "      email: { type: string, deprecated: \"use contact_id\" }\n",
+    );
     let report = covenant::diff::diff(&old, &new);
     assert_eq!(report.changes.len(), 1, "{:?}", report.changes);
-    assert!(matches!(report.changes[0].severity, covenant::diff::Severity::Info));
+    assert!(matches!(
+        report.changes[0].severity,
+        covenant::diff::Severity::Info
+    ));
     assert!(
-        report.changes[0].message.contains("deprecation note changed"),
+        report.changes[0]
+            .message
+            .contains("deprecation note changed"),
         "{}",
         report.changes[0].message
     );
-    assert!(report.changes[0].message.contains("use contact_id"), "{}", report.changes[0].message);
+    assert!(
+        report.changes[0].message.contains("use contact_id"),
+        "{}",
+        report.changes[0].message
+    );
 
     // An unchanged note is not a change at all.
     let same = covenant::diff::diff(&old, &old);

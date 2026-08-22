@@ -33,8 +33,17 @@ fn write(dir: &tempfile::TempDir, name: &str, content: &str) -> std::path::PathB
 fn validate_clean_contract_exits_0() {
     let dir = tempfile::tempdir().unwrap();
     let contract = write(&dir, "c.yaml", CONTRACT);
-    let out = Command::new(BIN).arg("validate").arg(&contract).output().unwrap();
-    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stdout));
+    let out = Command::new(BIN)
+        .arg("validate")
+        .arg(&contract)
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
 }
 
 #[test]
@@ -50,7 +59,11 @@ version: 1.0.0
 models: { m: { fields: { a: { type: string, pattern: "([" } } } }
 "#,
     );
-    let out = Command::new(BIN).arg("validate").arg(&contract).output().unwrap();
+    let out = Command::new(BIN)
+        .arg("validate")
+        .arg(&contract)
+        .output()
+        .unwrap();
     assert_eq!(out.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&out.stdout).contains("does not compile"));
 }
@@ -59,7 +72,11 @@ models: { m: { fields: { a: { type: string, pattern: "([" } } } }
 fn validate_unparseable_contract_exits_2() {
     let dir = tempfile::tempdir().unwrap();
     let contract = write(&dir, "c.yaml", "covenant: [not: valid");
-    let out = Command::new(BIN).arg("validate").arg(&contract).output().unwrap();
+    let out = Command::new(BIN)
+        .arg("validate")
+        .arg(&contract)
+        .output()
+        .unwrap();
     assert_eq!(out.status.code(), Some(2));
 }
 
@@ -89,7 +106,12 @@ not json at all
         .arg(&good)
         .output()
         .unwrap();
-    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stdout));
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
     assert!(String::from_utf8_lossy(&out.stdout).contains("PASS"));
 
     let out = Command::new(BIN)
@@ -161,8 +183,7 @@ fn check_csv_and_parquet() {
     ])
     .unwrap();
     let file = std::fs::File::create(&parquet_path).unwrap();
-    let mut writer =
-        parquet::arrow::ArrowWriter::try_new(file, batch.schema(), None).unwrap();
+    let mut writer = parquet::arrow::ArrowWriter::try_new(file, batch.schema(), None).unwrap();
     writer.write(&batch).unwrap();
     writer.close().unwrap();
 
@@ -252,7 +273,11 @@ fn gate_stats_flag_writes_the_sidecar_snapshot() {
         .write_all(b"{\"order_id\":\"ord_ab12\",\"amount\":10}\n{\"order_id\":\"ord_zz99\",\"amount\":-1}\n")
         .unwrap();
     let out = child.wait_with_output().unwrap();
-    assert_eq!(out.status.code(), Some(1), "one blocked record fails the stream");
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "one blocked record fails the stream"
+    );
 
     let snapshot: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&stats).unwrap()).unwrap();
@@ -260,9 +285,14 @@ fn gate_stats_flag_writes_the_sidecar_snapshot() {
     assert_eq!(snapshot["blocked"], 1);
     assert_eq!(snapshot["per_rule"][0]["rule"], "min");
     // Envelopes now carry a timestamp for the DLQ read endpoint.
-    let envelope: serde_json::Value =
-        serde_json::from_str(std::fs::read_to_string(&dlq).unwrap().lines().next().unwrap())
-            .unwrap();
+    let envelope: serde_json::Value = serde_json::from_str(
+        std::fs::read_to_string(&dlq)
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap(),
+    )
+    .unwrap();
     assert!(envelope["ts"].as_str().is_some(), "{envelope}");
 }
 
@@ -311,7 +341,12 @@ fn check_budget_is_per_run_not_per_file() {
         .arg(&b)
         .output()
         .unwrap();
-    assert_eq!(out.status.code(), Some(1), "{}", String::from_utf8_lossy(&out.stdout));
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
     assert!(String::from_utf8_lossy(&out.stdout).contains("run total: 2 violations"));
 
     // The same two files fit a budget of 2.
@@ -455,7 +490,11 @@ fn init_writes_a_valid_contract_and_refuses_overwrite() {
     assert_eq!(out.status.code(), Some(0));
 
     // The starter contract must pass its own linter.
-    let out = Command::new(BIN).arg("validate").arg(&path).output().unwrap();
+    let out = Command::new(BIN)
+        .arg("validate")
+        .arg(&path)
+        .output()
+        .unwrap();
     assert_eq!(
         out.status.code(),
         Some(0),

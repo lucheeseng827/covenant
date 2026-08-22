@@ -310,7 +310,10 @@ impl Contract {
         if self.covenant != 1 {
             out.push(err(
                 "covenant",
-                format!("unsupported spec revision {} (this runtime speaks 1)", self.covenant),
+                format!(
+                    "unsupported spec revision {} (this runtime speaks 1)",
+                    self.covenant
+                ),
             ));
         }
         if self.id.trim().is_empty() {
@@ -319,7 +322,10 @@ impl Contract {
         if semver::Version::parse(&self.version).is_err() {
             out.push(err(
                 "version",
-                format!("version {:?} is not valid semver (expected e.g. 1.2.0)", self.version),
+                format!(
+                    "version {:?} is not valid semver (expected e.g. 1.2.0)",
+                    self.version
+                ),
             ));
         }
         if self.models.is_empty() {
@@ -370,7 +376,10 @@ fn lint_field(
         if field.ty != FieldType::String {
             out.push(err(
                 fpath,
-                format!("pattern applies only to string fields, not {}", field.ty.name()),
+                format!(
+                    "pattern applies only to string fields, not {}",
+                    field.ty.name()
+                ),
             ));
         }
         if let Err(e) = regex::Regex::new(p) {
@@ -380,19 +389,28 @@ fn lint_field(
     if field.format.is_some() && field.ty != FieldType::String {
         out.push(err(
             fpath,
-            format!("format applies only to string fields, not {}", field.ty.name()),
+            format!(
+                "format applies only to string fields, not {}",
+                field.ty.name()
+            ),
         ));
     }
     if (field.min.is_some() || field.max.is_some()) && !numeric {
         out.push(err(
             fpath,
-            format!("min/max apply only to numeric fields, not {}", field.ty.name()),
+            format!(
+                "min/max apply only to numeric fields, not {}",
+                field.ty.name()
+            ),
         ));
     }
     for (name, bound) in [("min", field.min), ("max", field.max)] {
         if let Some(b) = bound {
             if !b.is_finite() {
-                out.push(err(fpath, format!("{name} must be a finite number, got {b}")));
+                out.push(err(
+                    fpath,
+                    format!("{name} must be a finite number, got {b}"),
+                ));
             }
         }
     }
@@ -404,17 +422,26 @@ fn lint_field(
     if (field.min_length.is_some() || field.max_length.is_some()) && field.ty != FieldType::String {
         out.push(err(
             fpath,
-            format!("min_length/max_length apply only to string fields, not {}", field.ty.name()),
+            format!(
+                "min_length/max_length apply only to string fields, not {}",
+                field.ty.name()
+            ),
         ));
     }
     if let (Some(lo), Some(hi)) = (field.min_length, field.max_length) {
         if lo > hi {
-            out.push(err(fpath, format!("min_length ({lo}) exceeds max_length ({hi})")));
+            out.push(err(
+                fpath,
+                format!("min_length ({lo}) exceeds max_length ({hi})"),
+            ));
         }
     }
     match &field.allowed {
         Some(values) if values.is_empty() => {
-            out.push(err(fpath, "allowed is empty — no value could ever pass".into()));
+            out.push(err(
+                fpath,
+                "allowed is empty — no value could ever pass".into(),
+            ));
         }
         Some(values) => {
             for v in values {
@@ -462,7 +489,8 @@ fn lint_field(
     if field.unique && field.nullable {
         out.push(warn(
             fpath,
-            "unique + nullable: nulls are exempt from uniqueness, which is usually surprising".into(),
+            "unique + nullable: nulls are exempt from uniqueness, which is usually surprising"
+                .into(),
         ));
     }
 }

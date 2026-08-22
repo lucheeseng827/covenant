@@ -65,7 +65,10 @@ fn full_clean_record_passes() {
     obj.insert("website".into(), json!("https://acme.io/x"));
     obj.insert("active".into(), json!(true));
     obj.insert("day".into(), json!("2026-08-11"));
-    obj.insert("trace".into(), json!("6f1e0d3a-8c2b-4a5d-9e7f-0123456789ab"));
+    obj.insert(
+        "trace".into(),
+        json!("6f1e0d3a-8c2b-4a5d-9e7f-0123456789ab"),
+    );
     obj.insert("note".into(), json!("hey"));
     assert!(rules_for(r).is_empty());
 }
@@ -86,33 +89,45 @@ fn required_missing() {
 #[test]
 fn null_not_allowed_vs_nullable() {
     let mut r = clean_record();
-    r.as_object_mut().unwrap().insert("amount".into(), json!(null));
+    r.as_object_mut()
+        .unwrap()
+        .insert("amount".into(), json!(null));
     assert_eq!(rules_for(r), vec![Rule::NullNotAllowed]);
 
     // email is nullable — explicit null passes.
     let mut r = clean_record();
-    r.as_object_mut().unwrap().insert("email".into(), json!(null));
+    r.as_object_mut()
+        .unwrap()
+        .insert("email".into(), json!(null));
     assert!(rules_for(r).is_empty());
 
     // optional non-nullable field: absent passes, null violates.
     let mut r = clean_record();
-    r.as_object_mut().unwrap().insert("currency".into(), json!(null));
+    r.as_object_mut()
+        .unwrap()
+        .insert("currency".into(), json!(null));
     assert_eq!(rules_for(r), vec![Rule::NullNotAllowed]);
 }
 
 #[test]
 fn type_mismatches() {
     let mut r = clean_record();
-    r.as_object_mut().unwrap().insert("amount".into(), json!("fifty"));
+    r.as_object_mut()
+        .unwrap()
+        .insert("amount".into(), json!("fifty"));
     assert_eq!(rules_for(r), vec![Rule::TypeMismatch]);
 
     // 3.5 is not an integer; 3.0 parses as float in JSON and is rejected too.
     let mut r = clean_record();
-    r.as_object_mut().unwrap().insert("amount".into(), json!(3.5));
+    r.as_object_mut()
+        .unwrap()
+        .insert("amount".into(), json!(3.5));
     assert_eq!(rules_for(r), vec![Rule::TypeMismatch]);
 
     let mut r = clean_record();
-    r.as_object_mut().unwrap().insert("amount".into(), json!(3.0));
+    r.as_object_mut()
+        .unwrap()
+        .insert("amount".into(), json!(3.0));
     assert_eq!(rules_for(r), vec![Rule::TypeMismatch]);
 
     // integers widen into float fields.
@@ -121,54 +136,76 @@ fn type_mismatches() {
     assert!(rules_for(r).is_empty());
 
     let mut r = clean_record();
-    r.as_object_mut().unwrap().insert("active".into(), json!("yes"));
+    r.as_object_mut()
+        .unwrap()
+        .insert("active".into(), json!("yes"));
     assert_eq!(rules_for(r), vec![Rule::TypeMismatch]);
 
     // malformed timestamp/date/uuid are type mismatches.
     let mut r = clean_record();
-    r.as_object_mut().unwrap().insert("created".into(), json!("2026-08-11 09:30"));
+    r.as_object_mut()
+        .unwrap()
+        .insert("created".into(), json!("2026-08-11 09:30"));
     assert_eq!(rules_for(r), vec![Rule::TypeMismatch]);
 
     let mut r = clean_record();
-    r.as_object_mut().unwrap().insert("day".into(), json!("11/08/2026"));
+    r.as_object_mut()
+        .unwrap()
+        .insert("day".into(), json!("11/08/2026"));
     assert_eq!(rules_for(r), vec![Rule::TypeMismatch]);
 
     let mut r = clean_record();
-    r.as_object_mut().unwrap().insert("trace".into(), json!("not-a-uuid"));
+    r.as_object_mut()
+        .unwrap()
+        .insert("trace".into(), json!("not-a-uuid"));
     assert_eq!(rules_for(r), vec![Rule::TypeMismatch]);
 }
 
 #[test]
 fn numeric_bounds() {
     let mut r = clean_record();
-    r.as_object_mut().unwrap().insert("amount".into(), json!(-1));
+    r.as_object_mut()
+        .unwrap()
+        .insert("amount".into(), json!(-1));
     assert_eq!(rules_for(r), vec![Rule::Min]);
 
     let mut r = clean_record();
-    r.as_object_mut().unwrap().insert("amount".into(), json!(101));
+    r.as_object_mut()
+        .unwrap()
+        .insert("amount".into(), json!(101));
     assert_eq!(rules_for(r), vec![Rule::Max]);
 
     let mut r = clean_record();
-    r.as_object_mut().unwrap().insert("ratio".into(), json!(1.5));
+    r.as_object_mut()
+        .unwrap()
+        .insert("ratio".into(), json!(1.5));
     assert_eq!(rules_for(r), vec![Rule::Max]);
 }
 
 #[test]
 fn string_constraints() {
     let mut r = clean_record();
-    r.as_object_mut().unwrap().insert("order_id".into(), json!("nope"));
+    r.as_object_mut()
+        .unwrap()
+        .insert("order_id".into(), json!("nope"));
     assert_eq!(rules_for(r), vec![Rule::Pattern]);
 
     let mut r = clean_record();
-    r.as_object_mut().unwrap().insert("currency".into(), json!("JPY"));
+    r.as_object_mut()
+        .unwrap()
+        .insert("currency".into(), json!("JPY"));
     assert_eq!(rules_for(r), vec![Rule::Allowed]);
 
     let mut r = clean_record();
-    r.as_object_mut().unwrap().insert("email".into(), json!("not-an-email"));
+    r.as_object_mut()
+        .unwrap()
+        .insert("email".into(), json!("not-an-email"));
     assert_eq!(rules_for(r), vec![Rule::Format]);
 
     let mut r = clean_record();
-    r.as_object_mut().unwrap().insert("website".into(), json!("no scheme here"));
+    r.as_object_mut()
+        .unwrap()
+        .insert("website".into(), json!("no scheme here"));
     assert_eq!(rules_for(r), vec![Rule::Format]);
 
     let mut r = clean_record();
@@ -176,14 +213,18 @@ fn string_constraints() {
     assert_eq!(rules_for(r), vec![Rule::MinLength]);
 
     let mut r = clean_record();
-    r.as_object_mut().unwrap().insert("note".into(), json!("toolong"));
+    r.as_object_mut()
+        .unwrap()
+        .insert("note".into(), json!("toolong"));
     assert_eq!(rules_for(r), vec![Rule::MaxLength]);
 }
 
 #[test]
 fn strict_rejects_undeclared_fields() {
     let mut r = clean_record();
-    r.as_object_mut().unwrap().insert("surprise".into(), json!(1));
+    r.as_object_mut()
+        .unwrap()
+        .insert("surprise".into(), json!(1));
     assert_eq!(rules_for(r), vec![Rule::UnexpectedField]);
 }
 
@@ -199,11 +240,16 @@ fn unique_across_records() {
 
     // Same order_id again → unique violation.
     assert!(!validate_record(model, &a, 1, Some(&mut tracker), &mut out));
-    assert_eq!(out.iter().map(|v| v.rule).collect::<Vec<_>>(), vec![Rule::Unique]);
+    assert_eq!(
+        out.iter().map(|v| v.rule).collect::<Vec<_>>(),
+        vec![Rule::Unique]
+    );
 
     // A different id is fine.
     let mut b = clean_record();
-    b.as_object_mut().unwrap().insert("order_id".into(), json!("ord_zz99"));
+    b.as_object_mut()
+        .unwrap()
+        .insert("order_id".into(), json!("ord_zz99"));
     out.clear();
     assert!(validate_record(model, &b, 2, Some(&mut tracker), &mut out));
 }
@@ -268,7 +314,10 @@ models: { m: { fields: { n: { type: integer, max: 9007199254740992 } } } }
     let mut out = Vec::new();
 
     let at_bound: serde_json::Value = serde_json::from_str(r#"{"n": 9007199254740992}"#).unwrap();
-    assert!(validate_record(model, &at_bound, 0, None, &mut out), "{out:?}");
+    assert!(
+        validate_record(model, &at_bound, 0, None, &mut out),
+        "{out:?}"
+    );
 
     let over: serde_json::Value = serde_json::from_str(r#"{"n": 9007199254740993}"#).unwrap();
     assert!(!validate_record(model, &over, 1, None, &mut out));
@@ -315,7 +364,9 @@ fn violation_carries_row_and_field() {
     let model = contract.resolve_model(None).unwrap();
     let mut out = Vec::new();
     let mut r = clean_record();
-    r.as_object_mut().unwrap().insert("amount".into(), json!(-5));
+    r.as_object_mut()
+        .unwrap()
+        .insert("amount".into(), json!(-5));
     validate_record(model, &r, 42, None, &mut out);
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].row, Some(42));

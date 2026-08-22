@@ -134,7 +134,11 @@ impl DiffReport {
                 } else {
                     "contract-wide".to_string()
                 };
-                let owner = c.owner.as_deref().map(|o| format!(" ({o})")).unwrap_or_default();
+                let owner = c
+                    .owner
+                    .as_deref()
+                    .map(|o| format!(" ({o})"))
+                    .unwrap_or_default();
                 let _ = writeln!(
                     s,
                     "  [{severity:<8}] {id}{owner} {via} — {changes}",
@@ -212,7 +216,8 @@ fn diff_policy(old: &Contract, new: &Contract, changes: &mut Vec<Change>) {
             severity: Severity::Risky,
             impact: Impact::Producers,
             path: "policy.on_violation".to_string(),
-            message: "enforcement tightened warn -> block — violating records start being withheld".into(),
+            message: "enforcement tightened warn -> block — violating records start being withheld"
+                .into(),
         }),
         _ => {}
     }
@@ -248,7 +253,9 @@ fn diff_model(
             severity: Severity::Risky,
             impact: Impact::Producers,
             path: mpath.clone(),
-            message: "model became strict — undeclared fields producers already send become violations".into(),
+            message:
+                "model became strict — undeclared fields producers already send become violations"
+                    .into(),
         });
     } else if old.strict && !new.strict {
         changes.push(Change {
@@ -305,12 +312,16 @@ fn diff_field(fpath: &str, old: &Field, new: &Field, changes: &mut Vec<Change>) 
     if old.ty != new.ty {
         // Integer → float is representational widening: every conforming
         // producer value still passes, but consumers' decoders change.
-        let (severity, impact, extra) = if old.ty == FieldType::Integer && new.ty == FieldType::Float
-        {
-            (Severity::Risky, Impact::Consumers, " (integer→float widening)")
-        } else {
-            (Severity::Breaking, Impact::Both, "")
-        };
+        let (severity, impact, extra) =
+            if old.ty == FieldType::Integer && new.ty == FieldType::Float {
+                (
+                    Severity::Risky,
+                    Impact::Consumers,
+                    " (integer→float widening)",
+                )
+            } else {
+                (Severity::Breaking, Impact::Both, "")
+            };
         changes.push(Change {
             severity,
             impact,
@@ -396,8 +407,22 @@ fn diff_field(fpath: &str, old: &Field, new: &Field, changes: &mut Vec<Change>) 
     );
     numeric_bound_change(fpath, "min", old.min, new.min, true, changes);
     numeric_bound_change(fpath, "max", old.max, new.max, false, changes);
-    length_bound_change(fpath, "min_length", old.min_length, new.min_length, true, changes);
-    length_bound_change(fpath, "max_length", old.max_length, new.max_length, false, changes);
+    length_bound_change(
+        fpath,
+        "min_length",
+        old.min_length,
+        new.min_length,
+        true,
+        changes,
+    );
+    length_bound_change(
+        fpath,
+        "max_length",
+        old.max_length,
+        new.max_length,
+        false,
+        changes,
+    );
     allowed_change(fpath, old, new, changes);
     format_change(fpath, old, new, changes);
 
@@ -485,7 +510,9 @@ fn length_bound_change(
     is_lower_bound: bool,
     changes: &mut Vec<Change>,
 ) {
-    bound_change(fpath, name, old, new, is_lower_bound, changes, |a, b| a.cmp(&b));
+    bound_change(fpath, name, old, new, is_lower_bound, changes, |a, b| {
+        a.cmp(&b)
+    });
 }
 
 fn bound_change<T: Copy + PartialEq + std::fmt::Display>(
@@ -522,14 +549,18 @@ fn bound_change<T: Copy + PartialEq + std::fmt::Display>(
                     severity: Severity::Risky,
                     impact: Impact::Producers,
                     path: fpath.to_string(),
-                    message: format!("{name} tightened {o} -> {n} — conforming values may start failing"),
+                    message: format!(
+                        "{name} tightened {o} -> {n} — conforming values may start failing"
+                    ),
                 });
             } else {
                 changes.push(Change {
                     severity: Severity::Risky,
                     impact: Impact::Consumers,
                     path: fpath.to_string(),
-                    message: format!("{name} loosened {o} -> {n} — consumers relying on the old bound may break"),
+                    message: format!(
+                        "{name} loosened {o} -> {n} — consumers relying on the old bound may break"
+                    ),
                 });
             }
         }
@@ -543,7 +574,10 @@ fn allowed_change(fpath: &str, old: &Field, new: &Field, changes: &mut Vec<Chang
             severity: Severity::Risky,
             impact: Impact::Producers,
             path: fpath.to_string(),
-            message: format!("allowed set added ({} values) — values outside it start failing", vals.len()),
+            message: format!(
+                "allowed set added ({} values) — values outside it start failing",
+                vals.len()
+            ),
         }),
         (Some(_), None) => changes.push(Change {
             severity: Severity::Risky,

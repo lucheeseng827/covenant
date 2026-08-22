@@ -99,9 +99,9 @@ impl CompiledAllowed {
     pub fn contains_f32(&self, n: f32) -> bool {
         match self {
             CompiledAllowed::Strings(_) => false,
-            CompiledAllowed::Values(vals) => {
-                vals.iter().any(|v| v.as_f64().map(|x| x as f32 == n).unwrap_or(false))
-            }
+            CompiledAllowed::Values(vals) => vals
+                .iter()
+                .any(|v| v.as_f64().map(|x| x as f32 == n).unwrap_or(false)),
         }
     }
 
@@ -181,11 +181,14 @@ impl CompiledContract {
     pub fn resolve_model(&self, requested: Option<&str>) -> Result<&CompiledModel> {
         let available = || self.models.keys().cloned().collect::<Vec<_>>().join(", ");
         match requested {
-            Some(name) => self.models.get(name).ok_or_else(|| CovenantError::ModelNotFound {
-                contract_id: self.id.clone(),
-                model: name.to_string(),
-                available: available(),
-            }),
+            Some(name) => self
+                .models
+                .get(name)
+                .ok_or_else(|| CovenantError::ModelNotFound {
+                    contract_id: self.id.clone(),
+                    model: name.to_string(),
+                    available: available(),
+                }),
             None if self.models.len() == 1 => Ok(self.models.values().next().unwrap()),
             None => Err(CovenantError::ModelAmbiguous {
                 contract_id: self.id.clone(),
@@ -312,7 +315,9 @@ pub mod shape {
             }
             StringFormat::Uri => {
                 // scheme ":" — RFC 3986 scheme = ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )
-                let Some(colon) = s.find(':') else { return false };
+                let Some(colon) = s.find(':') else {
+                    return false;
+                };
                 let scheme = &s[..colon];
                 let mut chars = scheme.chars();
                 match chars.next() {
@@ -365,23 +370,38 @@ mod tests {
     #[test]
     fn email_shapes() {
         assert!(shape::matches_format(StringFormat::Email, "a@b.co"));
-        assert!(shape::matches_format(StringFormat::Email, "first.last+tag@sub.domain.io"));
+        assert!(shape::matches_format(
+            StringFormat::Email,
+            "first.last+tag@sub.domain.io"
+        ));
         assert!(!shape::matches_format(StringFormat::Email, "no-at-sign"));
         assert!(!shape::matches_format(StringFormat::Email, "@domain.co"));
         assert!(!shape::matches_format(StringFormat::Email, "a@nodot"));
-        assert!(!shape::matches_format(StringFormat::Email, "a@.leading.dot"));
+        assert!(!shape::matches_format(
+            StringFormat::Email,
+            "a@.leading.dot"
+        ));
         assert!(!shape::matches_format(StringFormat::Email, "two@@b.co"));
         assert!(!shape::matches_format(StringFormat::Email, "sp ace@b.co"));
     }
 
     #[test]
     fn uri_shapes() {
-        assert!(shape::matches_format(StringFormat::Uri, "https://acme.io/x?y=1"));
+        assert!(shape::matches_format(
+            StringFormat::Uri,
+            "https://acme.io/x?y=1"
+        ));
         assert!(shape::matches_format(StringFormat::Uri, "s3://bucket/key"));
-        assert!(shape::matches_format(StringFormat::Uri, "urn:isbn:0451450523"));
+        assert!(shape::matches_format(
+            StringFormat::Uri,
+            "urn:isbn:0451450523"
+        ));
         assert!(!shape::matches_format(StringFormat::Uri, "no colon"));
         assert!(!shape::matches_format(StringFormat::Uri, "1http://x"));
         assert!(!shape::matches_format(StringFormat::Uri, "http:"));
-        assert!(!shape::matches_format(StringFormat::Uri, "http://with space"));
+        assert!(!shape::matches_format(
+            StringFormat::Uri,
+            "http://with space"
+        ));
     }
 }

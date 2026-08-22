@@ -196,7 +196,12 @@ impl ConsumerManifest {
                             format!(
                                 "model {m:?} not in contract {:?} (available: {})",
                                 contract.id,
-                                contract.models.keys().cloned().collect::<Vec<_>>().join(", "),
+                                contract
+                                    .models
+                                    .keys()
+                                    .cloned()
+                                    .collect::<Vec<_>>()
+                                    .join(", "),
                             ),
                         ));
                         continue;
@@ -284,7 +289,10 @@ impl ConsumerManifest {
                 let path = format!("consumes[{i}].verified");
                 // Both parse: the manifest pin was validated at load; a
                 // contract with a bad version fails its own lint elsewhere.
-                match (semver::Version::parse(pin), semver::Version::parse(&contract.version)) {
+                match (
+                    semver::Version::parse(pin),
+                    semver::Version::parse(&contract.version),
+                ) {
                     (Ok(pinned), Ok(current)) => {
                         // Pre-1.0 versions break on MINOR bumps (semver spec
                         // item 4), so the breaking segment is the major — or
@@ -324,7 +332,10 @@ impl ConsumerManifest {
                         }
                     }
                     (Err(_), _) | (_, Err(_)) => {
-                        out.push(err(path, "version pin or contract version is not semver".into()));
+                        out.push(err(
+                            path,
+                            "version pin or contract version is not semver".into(),
+                        ));
                     }
                 }
             }
@@ -477,11 +488,15 @@ fn classify_targets<'a>(path: &str, old: &'a Contract, new: &'a Contract) -> Vec
         }
         let old_fields = old.models.get(mname).map(|m| m.fields.keys());
         let new_fields = new.models.get(mname).map(|m| m.fields.keys());
-        for fname in old_fields.into_iter().flatten().chain(new_fields.into_iter().flatten()) {
+        for fname in old_fields
+            .into_iter()
+            .flatten()
+            .chain(new_fields.into_iter().flatten())
+        {
             if path == format!("models.{mname}.fields.{fname}")
-                && !out
-                    .iter()
-                    .any(|t| matches!(t, Target::Field(m, f) if *m == mname && *f == fname.as_str()))
+                && !out.iter().any(
+                    |t| matches!(t, Target::Field(m, f) if *m == mname && *f == fname.as_str()),
+                )
             {
                 out.push(Target::Field(mname, fname));
             }
@@ -502,7 +517,9 @@ pub fn annotate(
     manifests: &[ConsumerManifest],
 ) {
     let consumes_this = |m: &ConsumerManifest| {
-        m.consumes.iter().any(|c| c.contract == old.id || c.contract == new.id)
+        m.consumes
+            .iter()
+            .any(|c| c.contract == old.id || c.contract == new.id)
     };
 
     let mut impacted: Vec<ImpactedConsumer> = Vec::new();
@@ -559,7 +576,11 @@ pub fn annotate(
     }
 
     // Worst first, then by name, so CI logs lead with what blocks the merge.
-    impacted.sort_by(|a, b| b.severity.cmp(&a.severity).then_with(|| a.consumer.cmp(&b.consumer)));
+    impacted.sort_by(|a, b| {
+        b.severity
+            .cmp(&a.severity)
+            .then_with(|| a.consumer.cmp(&b.consumer))
+    });
 
     let unaffected: Vec<String> = manifests
         .iter()
@@ -645,7 +666,7 @@ pub fn scope_contract_to_consumer(
             .iter()
             .flat_map(|c| c.fields.as_ref().expect("whole-model blocks handled above"))
             .collect();
-        model.fields.retain(|name, _| declared.iter().any(|d| *d == name));
+        model.fields.retain(|name, _| declared.contains(&name));
     }
     // A model-omitted block can hold fields that live entirely in ANOTHER
     // model (verify_against accepts any-model fields) — scoping THIS model

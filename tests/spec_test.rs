@@ -40,8 +40,15 @@ fn parses_and_lints_clean() {
 #[test]
 fn field_order_is_preserved() {
     let c = Contract::parse(GOOD, "<test>").unwrap();
-    let names: Vec<&str> = c.models["orders"].fields.keys().map(String::as_str).collect();
-    assert_eq!(names, ["order_id", "amount", "currency", "email", "created"]);
+    let names: Vec<&str> = c.models["orders"]
+        .fields
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        names,
+        ["order_id", "amount", "currency", "email", "created"]
+    );
 }
 
 #[test]
@@ -102,7 +109,9 @@ version: 1.0.0
 models: { m: { fields: { a: { type: integer, min: 10, max: 1 } } } }
 "#,
     );
-    assert!(findings.iter().any(|(l, m)| *l == LintLevel::Error && m.contains("exceeds max")));
+    assert!(findings
+        .iter()
+        .any(|(l, m)| *l == LintLevel::Error && m.contains("exceeds max")));
 }
 
 #[test]
@@ -120,7 +129,10 @@ models:
       c: { type: boolean, format: email }
 "#,
     );
-    let errors: Vec<_> = findings.iter().filter(|(l, _)| *l == LintLevel::Error).collect();
+    let errors: Vec<_> = findings
+        .iter()
+        .filter(|(l, _)| *l == LintLevel::Error)
+        .collect();
     assert_eq!(errors.len(), 3, "{findings:?}");
 }
 
@@ -138,8 +150,12 @@ models:
       b: { type: integer, allowed: [1, "two"] }
 "#,
     );
-    assert!(findings.iter().any(|(l, m)| *l == LintLevel::Error && m.contains("allowed is empty")));
-    assert!(findings.iter().any(|(l, m)| *l == LintLevel::Error && m.contains("is not a integer")));
+    assert!(findings
+        .iter()
+        .any(|(l, m)| *l == LintLevel::Error && m.contains("allowed is empty")));
+    assert!(findings
+        .iter()
+        .any(|(l, m)| *l == LintLevel::Error && m.contains("is not a integer")));
 }
 
 #[test]
@@ -152,7 +168,9 @@ version: not-a-version
 models: { m: { fields: { a: { type: string } } } }
 "#,
     );
-    assert!(findings.iter().any(|(l, m)| *l == LintLevel::Error && m.contains("semver")));
+    assert!(findings
+        .iter()
+        .any(|(l, m)| *l == LintLevel::Error && m.contains("semver")));
 }
 
 #[test]
@@ -166,7 +184,9 @@ owner: x@y.z
 models: { m: { fields: { a: { type: string, unique: true, nullable: true } } } }
 "#,
     );
-    assert!(findings.iter().any(|(l, m)| *l == LintLevel::Warning && m.contains("unique + nullable")));
+    assert!(findings
+        .iter()
+        .any(|(l, m)| *l == LintLevel::Warning && m.contains("unique + nullable")));
     assert!(findings.iter().all(|(l, _)| *l != LintLevel::Error));
 }
 

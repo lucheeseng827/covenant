@@ -275,7 +275,11 @@ fn dispatch(cli: Cli) -> crate::error::Result<i32> {
                     }
                 }
             }
-            Ok(if has_errors { EXIT_VIOLATED } else { EXIT_CLEAN })
+            Ok(if has_errors {
+                EXIT_VIOLATED
+            } else {
+                EXIT_CLEAN
+            })
         }
 
         Command::Check {
@@ -354,7 +358,11 @@ fn dispatch(cli: Cli) -> crate::error::Result<i32> {
                             "run total: {total_violations} violation{} across {} files{}",
                             if total_violations == 1 { "" } else { "s" },
                             reports.len(),
-                            if budget > 0 { format!(" (budget {budget})") } else { String::new() },
+                            if budget > 0 {
+                                format!(" (budget {budget})")
+                            } else {
+                                String::new()
+                            },
                         );
                     }
                     if warn_only && any_failed {
@@ -386,10 +394,16 @@ fn dispatch(cli: Cli) -> crate::error::Result<i32> {
                 if path.is_dir() {
                     entries.extend(crate::consumers::load_dir_entries(path)?);
                 } else {
-                    entries.push((path.clone(), crate::consumers::ConsumerManifest::from_path(path)?));
+                    entries.push((
+                        path.clone(),
+                        crate::consumers::ConsumerManifest::from_path(path)?,
+                    ));
                 }
             }
-            let consuming = entries.iter().filter(|(_, m)| m.consumes_contract(&doc.id)).count();
+            let consuming = entries
+                .iter()
+                .filter(|(_, m)| m.consumes_contract(&doc.id))
+                .count();
             if consuming == 0 {
                 return Err(CovenantError::ManifestInvalid {
                     path: manifests
@@ -415,9 +429,9 @@ fn dispatch(cli: Cli) -> crate::error::Result<i32> {
                     findings: m.verify_against(&doc),
                 })
                 .collect();
-            let failed = results.iter().any(|r| {
-                r.findings.iter().any(|f| f.level == LintLevel::Error)
-            });
+            let failed = results
+                .iter()
+                .any(|r| r.findings.iter().any(|f| f.level == LintLevel::Error));
             // The one shared envelope (also what /v1/consumers/verify
             // serves), so one script works against either surface.
             let report = crate::consumers::ConsumerCheckReport {
@@ -434,16 +448,26 @@ fn dispatch(cli: Cli) -> crate::error::Result<i32> {
                     );
                 }
                 OutputFormat::Human => {
-                    println!("consumer check against {} v{}", report.contract, report.version);
+                    println!(
+                        "consumer check against {} v{}",
+                        report.contract, report.version
+                    );
                     let (mut ok, mut fail, mut warned, mut skipped) = (0u32, 0u32, 0u32, 0u32);
                     for r in &report.results {
                         let source = r.source.as_deref().unwrap_or("<inline>");
                         if !r.consumes_contract {
                             skipped += 1;
-                            println!("  skip  {} ({}) — does not consume {}", r.consumer, source, report.contract);
+                            println!(
+                                "  skip  {} ({}) — does not consume {}",
+                                r.consumer, source, report.contract
+                            );
                             continue;
                         }
-                        let errors = r.findings.iter().filter(|f| f.level == LintLevel::Error).count();
+                        let errors = r
+                            .findings
+                            .iter()
+                            .filter(|f| f.level == LintLevel::Error)
+                            .count();
                         if errors > 0 {
                             fail += 1;
                         } else if r.findings.is_empty() {
@@ -507,9 +531,7 @@ fn dispatch(cli: Cli) -> crate::error::Result<i32> {
                 FailOn::BreakingWithConsumers => report
                     .consumer_impact
                     .as_ref()
-                    .is_some_and(|ci| {
-                        ci.impacted.iter().any(|c| c.severity >= Severity::Breaking)
-                    }),
+                    .is_some_and(|ci| ci.impacted.iter().any(|c| c.severity >= Severity::Breaking)),
             };
             Ok(if failed { EXIT_VIOLATED } else { EXIT_CLEAN })
         }
@@ -586,7 +608,11 @@ fn dispatch(cli: Cli) -> crate::error::Result<i32> {
                     outcome.stats.warned,
                 );
             }
-            Ok(if outcome.failed { EXIT_VIOLATED } else { EXIT_CLEAN })
+            Ok(if outcome.failed {
+                EXIT_VIOLATED
+            } else {
+                EXIT_CLEAN
+            })
         }
 
         #[cfg(feature = "serve")]
@@ -647,7 +673,10 @@ fn dispatch(cli: Cli) -> crate::error::Result<i32> {
                         draft.sampled,
                         path.display(),
                     );
-                    eprintln!("next: review the `confirm:` notes, then `covenant validate {}`", path.display());
+                    eprintln!(
+                        "next: review the `confirm:` notes, then `covenant validate {}`",
+                        path.display()
+                    );
                 }
                 None => print!("{rendered}"),
             }

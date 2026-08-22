@@ -112,7 +112,10 @@ pub fn validate_batch(
 /// umbrella) so every accepted representation has a matching iteration arm
 /// below — compat and iteration must never disagree.
 fn type_compatible(ty: FieldType, dt: &DataType) -> bool {
-    let stringly = matches!(dt, DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View);
+    let stringly = matches!(
+        dt,
+        DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View
+    );
     let integer = matches!(
         dt,
         DataType::Int8
@@ -216,8 +219,11 @@ fn check_column(
         });
     }
 
-    let track_unique =
-        field.unique && unique.as_ref().map(|t| t.tracks(field_idx)).unwrap_or(false);
+    let track_unique = field.unique
+        && unique
+            .as_ref()
+            .map(|t| t.tracks(field_idx))
+            .unwrap_or(false);
 
     // Fast path: nothing to look at per-row for this column.
     let needs_value_pass = track_unique
@@ -244,7 +250,16 @@ fn check_column(
                 if !null_gate(model, field, a.is_null(i), row, out) {
                     continue;
                 }
-                check_str_value(model, field, field_idx, a.value(i), row, unique.as_deref_mut(), track_unique, out);
+                check_str_value(
+                    model,
+                    field,
+                    field_idx,
+                    a.value(i),
+                    row,
+                    unique.as_deref_mut(),
+                    track_unique,
+                    out,
+                );
             }
         }
         DataType::LargeUtf8 => {
@@ -254,7 +269,16 @@ fn check_column(
                 if !null_gate(model, field, a.is_null(i), row, out) {
                     continue;
                 }
-                check_str_value(model, field, field_idx, a.value(i), row, unique.as_deref_mut(), track_unique, out);
+                check_str_value(
+                    model,
+                    field,
+                    field_idx,
+                    a.value(i),
+                    row,
+                    unique.as_deref_mut(),
+                    track_unique,
+                    out,
+                );
             }
         }
         DataType::Utf8View => {
@@ -264,7 +288,16 @@ fn check_column(
                 if !null_gate(model, field, a.is_null(i), row, out) {
                     continue;
                 }
-                check_str_value(model, field, field_idx, a.value(i), row, unique.as_deref_mut(), track_unique, out);
+                check_str_value(
+                    model,
+                    field,
+                    field_idx,
+                    a.value(i),
+                    row,
+                    unique.as_deref_mut(),
+                    track_unique,
+                    out,
+                );
             }
         }
         DataType::Boolean => {
@@ -281,7 +314,15 @@ fn check_column(
                     }
                 }
                 if track_unique {
-                    check_unique(model, field, field_idx, &v.to_string(), row, unique.as_deref_mut(), out);
+                    check_unique(
+                        model,
+                        field,
+                        field_idx,
+                        &v.to_string(),
+                        row,
+                        unique.as_deref_mut(),
+                        out,
+                    );
                 }
             }
         }
@@ -301,31 +342,87 @@ fn check_column(
                         let (num, key): (NumVal, String) = $to_num(a.value(i));
                         check_numeric_value(model, field, num, &key, row, out);
                         if track_unique {
-                            check_unique(model, field, field_idx, &key, row, unique.as_deref_mut(), out);
+                            check_unique(
+                                model,
+                                field,
+                                field_idx,
+                                &key,
+                                row,
+                                unique.as_deref_mut(),
+                                out,
+                            );
                         }
                     }
                 }};
             }
             match dt {
-                DataType::Int8 => numeric_loop!(column.as_primitive::<Int8Type>(), |v: i8| (NumVal::Int(v as i128), (v as i64).to_string())),
-                DataType::Int16 => numeric_loop!(column.as_primitive::<Int16Type>(), |v: i16| (NumVal::Int(v as i128), (v as i64).to_string())),
-                DataType::Int32 => numeric_loop!(column.as_primitive::<Int32Type>(), |v: i32| (NumVal::Int(v as i128), (v as i64).to_string())),
-                DataType::Int64 => numeric_loop!(column.as_primitive::<Int64Type>(), |v: i64| (NumVal::Int(v as i128), v.to_string())),
-                DataType::UInt8 => numeric_loop!(column.as_primitive::<UInt8Type>(), |v: u8| (NumVal::Int(v as i128), (v as u64).to_string())),
-                DataType::UInt16 => numeric_loop!(column.as_primitive::<UInt16Type>(), |v: u16| (NumVal::Int(v as i128), (v as u64).to_string())),
-                DataType::UInt32 => numeric_loop!(column.as_primitive::<UInt32Type>(), |v: u32| (NumVal::Int(v as i128), (v as u64).to_string())),
-                DataType::UInt64 => numeric_loop!(column.as_primitive::<UInt64Type>(), |v: u64| (NumVal::Int(v as i128), v.to_string())),
-                DataType::Float32 => numeric_loop!(column.as_primitive::<Float32Type>(), |v: f32| (NumVal::F32(v), v.to_string())),
-                DataType::Float64 => numeric_loop!(column.as_primitive::<Float64Type>(), |v: f64| (NumVal::F64(v), v.to_string())),
+                DataType::Int8 => numeric_loop!(column.as_primitive::<Int8Type>(), |v: i8| (
+                    NumVal::Int(v as i128),
+                    (v as i64).to_string()
+                )),
+                DataType::Int16 => numeric_loop!(column.as_primitive::<Int16Type>(), |v: i16| (
+                    NumVal::Int(v as i128),
+                    (v as i64).to_string()
+                )),
+                DataType::Int32 => numeric_loop!(column.as_primitive::<Int32Type>(), |v: i32| (
+                    NumVal::Int(v as i128),
+                    (v as i64).to_string()
+                )),
+                DataType::Int64 => numeric_loop!(column.as_primitive::<Int64Type>(), |v: i64| (
+                    NumVal::Int(v as i128),
+                    v.to_string()
+                )),
+                DataType::UInt8 => numeric_loop!(column.as_primitive::<UInt8Type>(), |v: u8| (
+                    NumVal::Int(v as i128),
+                    (v as u64).to_string()
+                )),
+                DataType::UInt16 => numeric_loop!(column.as_primitive::<UInt16Type>(), |v: u16| (
+                    NumVal::Int(v as i128),
+                    (v as u64).to_string()
+                )),
+                DataType::UInt32 => numeric_loop!(column.as_primitive::<UInt32Type>(), |v: u32| (
+                    NumVal::Int(v as i128),
+                    (v as u64).to_string()
+                )),
+                DataType::UInt64 => numeric_loop!(column.as_primitive::<UInt64Type>(), |v: u64| (
+                    NumVal::Int(v as i128),
+                    v.to_string()
+                )),
+                DataType::Float32 => numeric_loop!(
+                    column.as_primitive::<Float32Type>(),
+                    |v: f32| (NumVal::F32(v), v.to_string())
+                ),
+                DataType::Float64 => numeric_loop!(
+                    column.as_primitive::<Float64Type>(),
+                    |v: f64| (NumVal::F64(v), v.to_string())
+                ),
                 // Temporal + binary columns: type already satisfies the
                 // contract; only nulls and uniqueness are checkable (value
                 // constraints were refused at column level above).
-                DataType::Timestamp(TimeUnit::Second, _) => numeric_loop!(column.as_primitive::<TimestampSecondType>(), |v: i64| (NumVal::Opaque, v.to_string())),
-                DataType::Timestamp(TimeUnit::Millisecond, _) => numeric_loop!(column.as_primitive::<TimestampMillisecondType>(), |v: i64| (NumVal::Opaque, v.to_string())),
-                DataType::Timestamp(TimeUnit::Microsecond, _) => numeric_loop!(column.as_primitive::<TimestampMicrosecondType>(), |v: i64| (NumVal::Opaque, v.to_string())),
-                DataType::Timestamp(TimeUnit::Nanosecond, _) => numeric_loop!(column.as_primitive::<TimestampNanosecondType>(), |v: i64| (NumVal::Opaque, v.to_string())),
-                DataType::Date32 => numeric_loop!(column.as_primitive::<Date32Type>(), |v: i32| (NumVal::Opaque, (v as i64).to_string())),
-                DataType::Date64 => numeric_loop!(column.as_primitive::<Date64Type>(), |v: i64| (NumVal::Opaque, v.to_string())),
+                DataType::Timestamp(TimeUnit::Second, _) => numeric_loop!(
+                    column.as_primitive::<TimestampSecondType>(),
+                    |v: i64| (NumVal::Opaque, v.to_string())
+                ),
+                DataType::Timestamp(TimeUnit::Millisecond, _) => numeric_loop!(
+                    column.as_primitive::<TimestampMillisecondType>(),
+                    |v: i64| (NumVal::Opaque, v.to_string())
+                ),
+                DataType::Timestamp(TimeUnit::Microsecond, _) => numeric_loop!(
+                    column.as_primitive::<TimestampMicrosecondType>(),
+                    |v: i64| (NumVal::Opaque, v.to_string())
+                ),
+                DataType::Timestamp(TimeUnit::Nanosecond, _) => numeric_loop!(
+                    column.as_primitive::<TimestampNanosecondType>(),
+                    |v: i64| (NumVal::Opaque, v.to_string())
+                ),
+                DataType::Date32 => numeric_loop!(column.as_primitive::<Date32Type>(), |v: i32| (
+                    NumVal::Opaque,
+                    (v as i64).to_string()
+                )),
+                DataType::Date64 => numeric_loop!(column.as_primitive::<Date64Type>(), |v: i64| (
+                    NumVal::Opaque,
+                    v.to_string()
+                )),
                 DataType::FixedSizeBinary(16) => {
                     let a = column.as_fixed_size_binary();
                     for i in 0..a.len() {
@@ -334,8 +431,17 @@ fn check_column(
                             continue;
                         }
                         if track_unique {
-                            let key: String = a.value(i).iter().map(|b| format!("{b:02x}")).collect();
-                            check_unique(model, field, field_idx, &key, row, unique.as_deref_mut(), out);
+                            let key: String =
+                                a.value(i).iter().map(|b| format!("{b:02x}")).collect();
+                            check_unique(
+                                model,
+                                field,
+                                field_idx,
+                                &key,
+                                row,
+                                unique.as_deref_mut(),
+                                out,
+                            );
                         }
                     }
                 }
@@ -367,7 +473,10 @@ fn check_column(
 }
 
 fn is_string_column(dt: &DataType) -> bool {
-    matches!(dt, DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View)
+    matches!(
+        dt,
+        DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View
+    )
 }
 
 /// String-column value: shape (for stringly contract types) then constraints.
@@ -501,8 +610,14 @@ fn check_numeric_value(
     let (below_min, above_max, allowed_hit): (bool, bool, Option<bool>) = match num {
         NumVal::Opaque => return,
         NumVal::Int(n) => (
-            field.min.map(|m| shape::int_below_min(n, m)).unwrap_or(false),
-            field.max.map(|m| shape::int_above_max(n, m)).unwrap_or(false),
+            field
+                .min
+                .map(|m| shape::int_below_min(n, m))
+                .unwrap_or(false),
+            field
+                .max
+                .map(|m| shape::int_above_max(n, m))
+                .unwrap_or(false),
             field.allowed.as_ref().map(|a| {
                 if field.ty == FieldType::Integer {
                     a.contains_integer(n)
@@ -531,7 +646,10 @@ fn check_numeric_value(
             rule: Rule::Min,
             row: Some(row),
             value: Some(key.to_string()),
-            message: format!("row {row}: field {:?} value {key} is below min {min}", field.name),
+            message: format!(
+                "row {row}: field {:?} value {key} is below min {min}",
+                field.name
+            ),
         });
     }
     if above_max {
@@ -542,7 +660,10 @@ fn check_numeric_value(
             rule: Rule::Max,
             row: Some(row),
             value: Some(key.to_string()),
-            message: format!("row {row}: field {:?} value {key} exceeds max {max}", field.name),
+            message: format!(
+                "row {row}: field {:?} value {key} exceeds max {max}",
+                field.name
+            ),
         });
     }
     if allowed_hit == Some(false) {

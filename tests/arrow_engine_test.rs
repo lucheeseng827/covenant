@@ -75,10 +75,16 @@ fn clean_batch() -> RecordBatch {
             "order_id",
             Arc::new(StringArray::from(vec!["ord_ab12", "ord_cd34"])) as ArrayRef,
         ),
-        ("amount", Arc::new(Int64Array::from(vec![10, 99])) as ArrayRef),
+        (
+            "amount",
+            Arc::new(Int64Array::from(vec![10, 99])) as ArrayRef,
+        ),
         (
             "created",
-            Arc::new(TimestampMillisecondArray::from(vec![1_700_000_000_000i64, 1_700_000_100_000])) as ArrayRef,
+            Arc::new(TimestampMillisecondArray::from(vec![
+                1_700_000_000_000i64,
+                1_700_000_100_000,
+            ])) as ArrayRef,
         ),
     ])
 }
@@ -113,7 +119,10 @@ fn incompatible_column_type_is_schema_violation() {
             Arc::new(StringArray::from(vec!["ord_ab12"])) as ArrayRef,
         ),
         // amount declared integer, column is utf8.
-        ("amount", Arc::new(StringArray::from(vec!["ten"])) as ArrayRef),
+        (
+            "amount",
+            Arc::new(StringArray::from(vec!["ten"])) as ArrayRef,
+        ),
         (
             "created",
             Arc::new(TimestampMillisecondArray::from(vec![0i64])) as ArrayRef,
@@ -133,7 +142,10 @@ fn columnar_null_semantics() {
             "order_id",
             Arc::new(StringArray::from(vec![Some("ord_ab12"), None])) as ArrayRef,
         ),
-        ("amount", Arc::new(Int64Array::from(vec![Some(10), Some(20)])) as ArrayRef),
+        (
+            "amount",
+            Arc::new(Int64Array::from(vec![Some(10), Some(20)])) as ArrayRef,
+        ),
         (
             "currency",
             Arc::new(StringArray::from(vec![None::<&str>, Some("USD")])) as ArrayRef,
@@ -158,13 +170,22 @@ fn value_constraints_fire() {
             "order_id",
             Arc::new(StringArray::from(vec!["BAD-ID", "ord_cd34"])) as ArrayRef,
         ),
-        ("amount", Arc::new(Int64Array::from(vec![-5, 101])) as ArrayRef),
-        ("ratio", Arc::new(Float64Array::from(vec![0.5, 1.5])) as ArrayRef),
+        (
+            "amount",
+            Arc::new(Int64Array::from(vec![-5, 101])) as ArrayRef,
+        ),
+        (
+            "ratio",
+            Arc::new(Float64Array::from(vec![0.5, 1.5])) as ArrayRef,
+        ),
         (
             "currency",
             Arc::new(StringArray::from(vec!["USD", "JPY"])) as ArrayRef,
         ),
-        ("active", Arc::new(BooleanArray::from(vec![true, false])) as ArrayRef),
+        (
+            "active",
+            Arc::new(BooleanArray::from(vec![true, false])) as ArrayRef,
+        ),
         (
             "created",
             Arc::new(TimestampMillisecondArray::from(vec![0i64, 1])) as ArrayRef,

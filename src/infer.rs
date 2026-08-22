@@ -233,8 +233,7 @@ impl FieldObs {
         if valued == 0 {
             notes.push(Note {
                 path: path.to_string(),
-                message: "every sampled value was null or absent — type is a guess (string)"
-                    .into(),
+                message: "every sampled value was null or absent — type is a guess (string)".into(),
                 confidence: Confidence::Confirm,
             });
             return FieldType::String;
@@ -255,10 +254,14 @@ impl FieldObs {
         // Mixed families widen to string, which is the only promise that
         // still holds — and say so, because a mixed column is usually a bug
         // in the producer, not a contract decision.
-        let families = [self.bools > 0, self.ints + self.floats > 0, self.strings > 0]
-            .iter()
-            .filter(|f| **f)
-            .count();
+        let families = [
+            self.bools > 0,
+            self.ints + self.floats > 0,
+            self.strings > 0,
+        ]
+        .iter()
+        .filter(|f| **f)
+        .count();
         if families > 1 {
             let mut seen = Vec::new();
             if self.bools > 0 {
@@ -364,7 +367,10 @@ impl FieldObs {
         if self.nulls > 0 {
             notes.push(Note {
                 path: path.clone(),
-                message: format!("{} of {} present values were null", self.nulls, self.present),
+                message: format!(
+                    "{} of {} present values were null",
+                    self.nulls, self.present
+                ),
                 confidence: Confidence::Observed,
             });
         }
@@ -513,7 +519,9 @@ impl FieldObs {
     /// A conservative `^prefix[class]{n}$` when every value shares a literal
     /// prefix and a fixed-width tail from one character class.
     fn suggest_pattern(&self) -> Option<String> {
-        if self.distinct_overflow || self.distinct.len() < 2 || self.valued() < MIN_SAMPLES_FOR_HINTS
+        if self.distinct_overflow
+            || self.distinct.len() < 2
+            || self.valued() < MIN_SAMPLES_FOR_HINTS
         {
             return None;
         }
@@ -535,10 +543,8 @@ impl FieldObs {
             );
         }
         let prefix = &first[..prefix_len];
-        let prefix = match prefix.rfind(['_', '-', ':', '/']) {
-            Some(i) => &prefix[..=i],
-            None => return None,
-        };
+        let cut = prefix.rfind(['_', '-', ':', '/'])?;
+        let prefix = &prefix[..=cut];
         if prefix.is_empty() {
             return None;
         }
@@ -549,12 +555,15 @@ impl FieldObs {
         }
         let class = if tails.iter().all(|t| t.bytes().all(|b| b.is_ascii_digit())) {
             "0-9"
+        } else if tails.iter().all(|t| {
+            t.bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+        }) {
+            "a-z0-9"
         } else if tails
             .iter()
-            .all(|t| t.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit()))
+            .all(|t| t.bytes().all(|b| b.is_ascii_alphanumeric()))
         {
-            "a-z0-9"
-        } else if tails.iter().all(|t| t.bytes().all(|b| b.is_ascii_alphanumeric())) {
             "A-Za-z0-9"
         } else {
             return None;
@@ -631,7 +640,11 @@ pub fn infer_paths(paths: &[PathBuf], opts: &InferOptions) -> Result<Draft> {
         });
     }
     let mut sampler = Sampler::default();
-    let limit = if opts.sample == 0 { u64::MAX } else { opts.sample };
+    let limit = if opts.sample == 0 {
+        u64::MAX
+    } else {
+        opts.sample
+    };
     let mut truncated = false;
     for path in paths {
         if sampler.records >= limit {
@@ -654,7 +667,11 @@ pub fn infer_paths(paths: &[PathBuf], opts: &InferOptions) -> Result<Draft> {
         return Err(CovenantError::Usage {
             message: format!(
                 "no records found in {} — cannot infer a contract from nothing",
-                paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", "),
+                paths
+                    .iter()
+                    .map(|p| p.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", "),
             ),
         });
     }
@@ -789,10 +806,7 @@ fn sample_ndjson(path: &Path, limit: u64, sampler: &mut Sampler) -> Result<()> {
             sampler.not_objects += 1;
             continue;
         };
-        let pairs: Vec<(String, Obs)> = map
-            .iter()
-            .map(|(k, v)| (k.clone(), json_obs(v)))
-            .collect();
+        let pairs: Vec<(String, Obs)> = map.iter().map(|(k, v)| (k.clone(), json_obs(v))).collect();
         sampler.record(pairs.iter().map(|(k, v)| (k.as_str(), *v)));
     }
     Ok(())
@@ -882,7 +896,12 @@ fn sample_batch(batch: &arrow_array::RecordBatch, limit: u64, sampler: &mut Samp
     use arrow_array::{cast::AsArray, types::*, Array};
     use arrow_schema::DataType;
 
-    let names: Vec<&str> = batch.schema_ref().fields().iter().map(|f| f.name().as_str()).collect();
+    let names: Vec<&str> = batch
+        .schema_ref()
+        .fields()
+        .iter()
+        .map(|f| f.name().as_str())
+        .collect();
     let rows = batch.num_rows();
     for row in 0..rows {
         if sampler.records >= limit {
@@ -964,12 +983,16 @@ fn render_temporal(array: &dyn arrow_array::Array, row: usize) -> String {
     use arrow_schema::DataType;
     match array.data_type() {
         DataType::Date32 => arrow_array::temporal_conversions::date32_to_datetime(
-            array.as_primitive::<arrow_array::types::Date32Type>().value(row),
+            array
+                .as_primitive::<arrow_array::types::Date32Type>()
+                .value(row),
         )
         .map(|d| d.format("%Y-%m-%d").to_string())
         .unwrap_or_default(),
         DataType::Date64 => arrow_array::temporal_conversions::date64_to_datetime(
-            array.as_primitive::<arrow_array::types::Date64Type>().value(row),
+            array
+                .as_primitive::<arrow_array::types::Date64Type>()
+                .value(row),
         )
         .map(|d| d.format("%Y-%m-%d").to_string())
         .unwrap_or_default(),
@@ -1000,7 +1023,10 @@ fn render_temporal(array: &dyn arrow_array::Array, row: usize) -> String {
                 ),
             };
             v.and_then(arrow_array::temporal_conversions::timestamp_ns_to_datetime)
-                .map(|d| d.and_utc().to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+                .map(|d| {
+                    d.and_utc()
+                        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+                })
                 .unwrap_or_default()
         }
     }
@@ -1018,7 +1044,11 @@ impl Draft {
             out,
             "# DRAFT contract inferred by `covenant infer` from {} sampled record(s){}.",
             self.sampled,
-            if self.truncated { " (sample truncated)" } else { "" },
+            if self.truncated {
+                " (sample truncated)"
+            } else {
+                ""
+            },
         );
         for source in &self.sources {
             let _ = writeln!(out, "#   source: {source}");
@@ -1034,8 +1064,15 @@ impl Draft {
         );
         let _ = writeln!(out, "covenant: {}", c.covenant);
         let _ = writeln!(out, "id: {}", yaml_scalar(&c.id));
-        let _ = writeln!(out, "version: {}   # 0.x: a draft, not yet a promise", c.version);
-        let _ = writeln!(out, "# owner: data-platform@example.com   # TODO: who answers for this?");
+        let _ = writeln!(
+            out,
+            "version: {}   # 0.x: a draft, not yet a promise",
+            c.version
+        );
+        let _ = writeln!(
+            out,
+            "# owner: data-platform@example.com   # TODO: who answers for this?"
+        );
         if let Some(d) = &c.description {
             let _ = writeln!(out, "description: {}", yaml_scalar(d));
         }
@@ -1078,9 +1115,7 @@ impl Draft {
                     let _ = writeln!(out, "        max: {}", render_number(hi));
                 }
                 if let (Some(lo), Some(hi)) = (field.min_length, field.max_length) {
-                    for note in
-                        self.notes_for(&format!("{base}.min_length/max_length"))
-                    {
+                    for note in self.notes_for(&format!("{base}.min_length/max_length")) {
                         let _ = writeln!(out, "        {} {}", note.marker(), note.message);
                     }
                     let _ = writeln!(out, "        min_length: {lo}");
@@ -1115,7 +1150,9 @@ impl Draft {
         let _ = writeln!(out, "\npolicy:");
         for line in policy.lines().filter(|l| !l.trim().is_empty()) {
             let annotation = match line.split(':').next().map(str::trim) {
-                Some("on_violation") => "   # block = fail CI / withhold records; warn = report only",
+                Some("on_violation") => {
+                    "   # block = fail CI / withhold records; warn = report only"
+                }
                 Some("max_violations") => "  # budget for known dirt while a producer cleans up",
                 Some("sample_violations") => " # example violations kept per (field, rule)",
                 _ => "",

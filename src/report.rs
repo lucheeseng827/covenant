@@ -196,7 +196,11 @@ impl CheckReport {
     pub fn render_human(&self, max_violations: u64) -> String {
         use std::fmt::Write;
         let mut s = String::new();
-        let verdict = if self.passed(max_violations) { "PASS" } else { "FAIL" };
+        let verdict = if self.passed(max_violations) {
+            "PASS"
+        } else {
+            "FAIL"
+        };
         let _ = writeln!(
             s,
             "{verdict}  {source}  [{id} v{version}, model {model}]",
@@ -224,14 +228,26 @@ impl CheckReport {
         if !self.per_rule.is_empty() {
             let _ = writeln!(s, "  by rule:");
             for rc in &self.per_rule {
-                let field = if rc.field.is_empty() { "<record>" } else { &rc.field };
-                let _ = writeln!(s, "    {field:<24} {rule:<22} × {count}", rule = rc.rule, count = rc.count);
+                let field = if rc.field.is_empty() {
+                    "<record>"
+                } else {
+                    &rc.field
+                };
+                let _ = writeln!(
+                    s,
+                    "    {field:<24} {rule:<22} × {count}",
+                    rule = rc.rule,
+                    count = rc.count
+                );
             }
         }
         if !self.samples.is_empty() {
             let _ = writeln!(s, "  samples:");
             for v in &self.samples {
-                let row = v.row.map(|r| format!("row {r}")).unwrap_or_else(|| "schema".into());
+                let row = v
+                    .row
+                    .map(|r| format!("row {r}"))
+                    .unwrap_or_else(|| "schema".into());
                 let _ = writeln!(s, "    [{row}] {}", v.message);
             }
         }

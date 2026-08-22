@@ -59,7 +59,10 @@ pub fn validate_record(
                         Rule::NullNotAllowed,
                         row,
                         None,
-                        format!("row {row}: field {:?} is null but the contract forbids null", field.name),
+                        format!(
+                            "row {row}: field {:?} is null but the contract forbids null",
+                            field.name
+                        ),
                     ));
                 }
             }
@@ -103,7 +106,9 @@ pub fn validate_record(
                     rule: Rule::UnexpectedField,
                     row: Some(row),
                     value: None,
-                    message: format!("row {row}: field {key:?} is not declared in the contract (strict model)"),
+                    message: format!(
+                        "row {row}: field {key:?} is not declared in the contract (strict model)"
+                    ),
                 });
             }
         }
@@ -188,9 +193,33 @@ fn check_value(
                 false
             }
         },
-        FieldType::Timestamp => check_stringly(model, field, value, row, out, shape::is_timestamp, "an RFC 3339 timestamp"),
-        FieldType::Date => check_stringly(model, field, value, row, out, shape::is_date, "a YYYY-MM-DD date"),
-        FieldType::Uuid => check_stringly(model, field, value, row, out, shape::is_uuid, "a canonical UUID"),
+        FieldType::Timestamp => check_stringly(
+            model,
+            field,
+            value,
+            row,
+            out,
+            shape::is_timestamp,
+            "an RFC 3339 timestamp",
+        ),
+        FieldType::Date => check_stringly(
+            model,
+            field,
+            value,
+            row,
+            out,
+            shape::is_date,
+            "a YYYY-MM-DD date",
+        ),
+        FieldType::Uuid => check_stringly(
+            model,
+            field,
+            value,
+            row,
+            out,
+            shape::is_uuid,
+            "a canonical UUID",
+        ),
     }
 }
 
@@ -251,7 +280,10 @@ fn check_string_constraints(
                 Rule::MinLength,
                 row,
                 Some(truncate(s, 64)),
-                format!("row {row}: field {:?} length {len} is below min_length {lo}", field.name),
+                format!(
+                    "row {row}: field {:?} length {len} is below min_length {lo}",
+                    field.name
+                ),
             ));
         }
     }
@@ -263,7 +295,10 @@ fn check_string_constraints(
                 Rule::MaxLength,
                 row,
                 Some(truncate(s, 64)),
-                format!("row {row}: field {:?} length {len} exceeds max_length {hi}", field.name),
+                format!(
+                    "row {row}: field {:?} length {len} exceeds max_length {hi}",
+                    field.name
+                ),
             ));
         }
     }
@@ -337,7 +372,10 @@ fn check_integer_constraints(
                 Rule::Min,
                 row,
                 Some(preview(value)),
-                format!("row {row}: field {:?} value {n} is below min {min}", field.name),
+                format!(
+                    "row {row}: field {:?} value {n} is below min {min}",
+                    field.name
+                ),
             ));
         }
     }
@@ -349,7 +387,10 @@ fn check_integer_constraints(
                 Rule::Max,
                 row,
                 Some(preview(value)),
-                format!("row {row}: field {:?} value {n} exceeds max {max}", field.name),
+                format!(
+                    "row {row}: field {:?} value {n} exceeds max {max}",
+                    field.name
+                ),
             ));
         }
     }
@@ -371,7 +412,10 @@ fn check_numeric_constraints(
                 Rule::Min,
                 row,
                 Some(preview(value)),
-                format!("row {row}: field {:?} value {n} is below min {min}", field.name),
+                format!(
+                    "row {row}: field {:?} value {n} is below min {min}",
+                    field.name
+                ),
             ));
         }
     }
@@ -383,7 +427,10 @@ fn check_numeric_constraints(
                 Rule::Max,
                 row,
                 Some(preview(value)),
-                format!("row {row}: field {:?} value {n} exceeds max {max}", field.name),
+                format!(
+                    "row {row}: field {:?} value {n} exceeds max {max}",
+                    field.name
+                ),
             ));
         }
     }
@@ -474,7 +521,13 @@ fn canonical_key(ty: FieldType, v: &Value) -> String {
         (FieldType::Float, _) => v
             .as_f64()
             // `-0.0 == 0.0` but they render "-0"/"0" — one value, one key.
-            .map(|f| if f == 0.0 { "0".to_string() } else { f.to_string() })
+            .map(|f| {
+                if f == 0.0 {
+                    "0".to_string()
+                } else {
+                    f.to_string()
+                }
+            })
             .unwrap_or_else(|| v.to_string()),
         (FieldType::Integer, _) => v
             .as_i64()

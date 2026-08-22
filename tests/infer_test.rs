@@ -32,9 +32,19 @@ fn orders_ndjson() -> String {
             format!("\"email\": \"user{i}@acme.io\""),
             format!("\"amount\": {}.5", 10 + i),
             format!("\"status\": \"{}\"", statuses[i % 3]),
-            format!("\"trace\": \"550e8400-e29b-41d4-a716-4466554400{:02}\"", i % 100),
+            format!(
+                "\"trace\": \"550e8400-e29b-41d4-a716-4466554400{:02}\"",
+                i % 100
+            ),
             format!("\"created_at\": \"2026-08-{:02}T10:00:00Z\"", (i % 28) + 1),
-            format!("\"note\": {}", if i % 5 == 0 { "null".into() } else { format!("\"n{i}\"") }),
+            format!(
+                "\"note\": {}",
+                if i % 5 == 0 {
+                    "null".into()
+                } else {
+                    format!("\"n{i}\"")
+                }
+            ),
         ];
         if i % 8 != 0 {
             fields.push(format!("\"qty\": {}", (i % 9) + 1));
@@ -74,7 +84,10 @@ fn radix_looking_strings_survive_the_yaml_round_trip() {
 
     let yaml = draft.to_yaml();
     let reparsed = Contract::parse(&yaml, "<draft>").expect("must reparse");
-    let allowed = reparsed.models["codes"].fields["code"].allowed.as_ref().unwrap();
+    let allowed = reparsed.models["codes"].fields["code"]
+        .allowed
+        .as_ref()
+        .unwrap();
     for v in values {
         assert!(
             allowed.contains(&serde_json::Value::String(v.to_string())),
@@ -108,8 +121,7 @@ fn a_draft_always_parses_compiles_and_accepts_its_own_sample() {
 
     // And the data it was drafted from must pass its own contract.
     let model = compiled.resolve_model(None).unwrap();
-    let report =
-        covenant::sources::check_path(&compiled, model, &data_path, None).unwrap();
+    let report = covenant::sources::check_path(&compiled, model, &data_path, None).unwrap();
     assert_eq!(report.violations, 0, "{:#?}\n{yaml}", report.per_rule);
 }
 
@@ -161,7 +173,10 @@ fn guesses_from_a_window_are_marked_confirm() {
         3,
         "three statuses in the sample"
     );
-    assert_eq!(model.fields["order_id"].pattern.as_deref(), Some("^ord_[0-9]{4}$"));
+    assert_eq!(
+        model.fields["order_id"].pattern.as_deref(),
+        Some("^ord_[0-9]{4}$")
+    );
     assert!(model.fields["amount"].min.is_some() && model.fields["amount"].max.is_some());
 
     // …and every one of them carries a confirm note naming its evidence.
@@ -190,7 +205,11 @@ fn uniqueness_is_suggested_but_never_promised() {
         .iter()
         .find(|n| n.path.ends_with("order_id.unique"))
         .expect("a distinct-values note");
-    assert!(note.message.contains("cannot prove uniqueness"), "{}", note.message);
+    assert!(
+        note.message.contains("cannot prove uniqueness"),
+        "{}",
+        note.message
+    );
 }
 
 #[test]
@@ -198,7 +217,10 @@ fn a_mixed_column_widens_to_string_and_says_why() {
     let dir = tempfile::tempdir().unwrap();
     let data = "{\"v\": 1}\n{\"v\": \"two\"}\n{\"v\": 3}\n";
     let draft = draft_from(dir.path(), data);
-    assert_eq!(draft.contract.models["orders"].fields["v"].ty, FieldType::String);
+    assert_eq!(
+        draft.contract.models["orders"].fields["v"].ty,
+        FieldType::String
+    );
     let note = draft
         .notes
         .iter()
@@ -213,12 +235,21 @@ fn integral_floats_draft_as_integer_with_a_warning() {
     let dir = tempfile::tempdir().unwrap();
     // JSON writes 2.0 as a float token, but nothing here has a fraction.
     let draft = draft_from(dir.path(), "{\"n\": 2.0}\n{\"n\": 3.0}\n");
-    assert_eq!(draft.contract.models["orders"].fields["n"].ty, FieldType::Integer);
-    assert!(draft.notes.iter().any(|n| n.message.contains("written as floats")));
+    assert_eq!(
+        draft.contract.models["orders"].fields["n"].ty,
+        FieldType::Integer
+    );
+    assert!(draft
+        .notes
+        .iter()
+        .any(|n| n.message.contains("written as floats")));
 
     // A real fraction anywhere makes it a float.
     let draft = draft_from(dir.path(), "{\"n\": 2.0}\n{\"n\": 3.5}\n");
-    assert_eq!(draft.contract.models["orders"].fields["n"].ty, FieldType::Float);
+    assert_eq!(
+        draft.contract.models["orders"].fields["n"].ty,
+        FieldType::Float
+    );
 }
 
 #[test]
@@ -226,7 +257,11 @@ fn an_all_null_column_is_a_guess_and_admits_it() {
     let dir = tempfile::tempdir().unwrap();
     let draft = draft_from(dir.path(), "{\"x\": null}\n{\"x\": null}\n");
     let field = &draft.contract.models["orders"].fields["x"];
-    assert_eq!(field.ty, FieldType::String, "nothing to go on — widest type");
+    assert_eq!(
+        field.ty,
+        FieldType::String,
+        "nothing to go on — widest type"
+    );
     assert!(field.nullable);
     assert!(draft
         .notes
@@ -266,14 +301,21 @@ fn a_stable_shape_drafts_strict_and_a_moving_one_does_not() {
         .iter()
         .find(|n| n.path.ends_with(".strict"))
         .expect("strict note");
-    assert!(note.message.contains("2 different field sets"), "{}", note.message);
+    assert!(
+        note.message.contains("2 different field sets"),
+        "{}",
+        note.message
+    );
 }
 
 #[test]
 fn enums_need_repetition_not_just_few_values() {
     let dir = tempfile::tempdir().unwrap();
     // 3 records, 3 distinct values: too thin to call a closed set.
-    let thin = draft_from(dir.path(), "{\"s\": \"a\"}\n{\"s\": \"b\"}\n{\"s\": \"c\"}\n");
+    let thin = draft_from(
+        dir.path(),
+        "{\"s\": \"a\"}\n{\"s\": \"b\"}\n{\"s\": \"c\"}\n",
+    );
     assert!(thin.contract.models["orders"].fields["s"].allowed.is_none());
 
     // 40 records over 2 values: now the set looks real.
@@ -282,7 +324,11 @@ fn enums_need_repetition_not_just_few_values() {
         .collect();
     let thick = draft_from(dir.path(), &repeated);
     assert_eq!(
-        thick.contract.models["orders"].fields["s"].allowed.as_ref().unwrap().len(),
+        thick.contract.models["orders"].fields["s"]
+            .allowed
+            .as_ref()
+            .unwrap()
+            .len(),
         2
     );
 }
@@ -297,7 +343,10 @@ fn dirty_input_teaches_nothing_but_never_kills_the_run() {
         "{\"a\": 1}\nnot json at all\n[1,2,3]\n\n{\"a\": 2}\n",
     );
     assert_eq!(draft.sampled, 2, "only the two objects counted");
-    assert!(draft.notes.iter().any(|n| n.message.contains("not JSON objects")));
+    assert!(draft
+        .notes
+        .iter()
+        .any(|n| n.message.contains("not JSON objects")));
 }
 
 #[test]
@@ -305,14 +354,24 @@ fn the_sample_window_is_honoured_and_reported() {
     let dir = tempfile::tempdir().unwrap();
     let data: String = (0..100).map(|i| format!("{{\"a\": {i}}}\n")).collect();
     let path = write(dir.path(), "orders.ndjson", &data);
-    let opts = InferOptions { sample: 10, ..InferOptions::default() };
+    let opts = InferOptions {
+        sample: 10,
+        ..InferOptions::default()
+    };
     let draft = infer_paths(std::slice::from_ref(&path), &opts).unwrap();
     assert_eq!(draft.sampled, 10);
     assert!(draft.truncated);
     assert!(draft.to_yaml().contains("sample truncated"));
 
     // sample: 0 means everything.
-    let all = infer_paths(&[path], &InferOptions { sample: 0, ..InferOptions::default() }).unwrap();
+    let all = infer_paths(
+        &[path],
+        &InferOptions {
+            sample: 0,
+            ..InferOptions::default()
+        },
+    )
+    .unwrap();
     assert_eq!(all.sampled, 100);
     assert!(!all.truncated);
 }
@@ -333,9 +392,17 @@ fn hostile_field_names_and_values_stay_quoted() {
     assert!(model.fields.contains_key("weird key: yes"), "{yaml}");
     // "true" and "12345" must come back as STRINGS, not bool/int.
     let allowed = model.fields["weird key: yes"].allowed.as_ref().unwrap();
-    assert_eq!(allowed[0], serde_json::Value::String("true".into()), "{yaml}");
+    assert_eq!(
+        allowed[0],
+        serde_json::Value::String("true".into()),
+        "{yaml}"
+    );
     let numeric = model.fields["n"].allowed.as_ref().unwrap();
-    assert_eq!(numeric[0], serde_json::Value::String("12345".into()), "{yaml}");
+    assert_eq!(
+        numeric[0],
+        serde_json::Value::String("12345".into()),
+        "{yaml}"
+    );
 }
 
 #[test]
@@ -379,8 +446,11 @@ fn csv_and_parquet_infer_through_the_same_accumulator() {
     writer.write(&batch).unwrap();
     writer.close().unwrap();
 
-    let draft =
-        infer_paths(std::slice::from_ref(&parquet_path), &InferOptions::default()).unwrap();
+    let draft = infer_paths(
+        std::slice::from_ref(&parquet_path),
+        &InferOptions::default(),
+    )
+    .unwrap();
     assert_eq!(draft.sampled, 30);
     assert_eq!(
         draft.contract.models["orders"].fields["amount"].ty,
@@ -448,7 +518,10 @@ fn an_out_of_range_timestamp_does_not_panic_or_invent_a_date() {
     // The overflowing cell renders empty, so the column is no longer a clean
     // timestamp — it widens to string rather than promising a shape half the
     // values do not have.
-    assert_eq!(draft.contract.models["far_future"].fields["t"].ty, FieldType::String);
+    assert_eq!(
+        draft.contract.models["far_future"].fields["t"].ty,
+        FieldType::String
+    );
     Contract::parse(&draft.to_yaml(), "<draft>").unwrap();
 }
 
@@ -458,10 +531,22 @@ fn cli_drafts_to_stdout_and_to_a_file_it_will_not_overwrite() {
     let data = write(dir.path(), "orders.ndjson", &orders_ndjson());
 
     // stdout, exit 0 — a draft is not a verdict, nothing can have failed.
-    let out = Command::new(BIN).args(["infer"]).arg(&data).output().unwrap();
-    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(BIN)
+        .args(["infer"])
+        .arg(&data)
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let yaml = String::from_utf8_lossy(&out.stdout);
-    assert!(yaml.starts_with("# DRAFT contract inferred by `covenant infer`"), "{yaml}");
+    assert!(
+        yaml.starts_with("# DRAFT contract inferred by `covenant infer`"),
+        "{yaml}"
+    );
     Contract::parse(&yaml, "<stdout>").unwrap();
 
     // --out writes the file…
@@ -497,7 +582,12 @@ fn json_output_carries_the_uncertainty_as_data() {
         .arg(&data)
         .output()
         .unwrap();
-    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let j: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(j["contract"]["id"], "orders");
     assert_eq!(j["sampled"], 40);

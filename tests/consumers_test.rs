@@ -62,7 +62,10 @@ consumes:
     assert_eq!(m.id, "rollup");
     assert_eq!(m.owner.as_deref(), Some("fin@acme.io"));
     assert_eq!(m.consumes.len(), 1);
-    assert_eq!(m.consumes[0].fields.as_deref(), Some(&["email".to_string(), "currency".into()][..]));
+    assert_eq!(
+        m.consumes[0].fields.as_deref(),
+        Some(&["email".to_string(), "currency".into()][..])
+    );
 }
 
 #[test]
@@ -92,16 +95,20 @@ fn manifest_rejects_a_blank_model_selector() {
 
 #[test]
 fn manifest_rejects_wrong_revision() {
-    let err =
-        ConsumerManifest::parse("consumer: 2\nid: x\nconsumes: [{contract: orders}]\n", "<test>")
-            .unwrap_err();
+    let err = ConsumerManifest::parse(
+        "consumer: 2\nid: x\nconsumes: [{contract: orders}]\n",
+        "<test>",
+    )
+    .unwrap_err();
     assert!(err.to_string().contains("revision 2"), "{err}");
 }
 
 #[test]
 fn manifest_rejects_empty_id_and_empty_consumes() {
-    assert!(ConsumerManifest::parse("consumer: 1\nid: \"\"\nconsumes: [{contract: c}]\n", "<t>")
-        .is_err());
+    assert!(
+        ConsumerManifest::parse("consumer: 1\nid: \"\"\nconsumes: [{contract: c}]\n", "<t>")
+            .is_err()
+    );
     assert!(ConsumerManifest::parse("consumer: 1\nid: x\nconsumes: []\n", "<t>").is_err());
 }
 
@@ -120,10 +127,22 @@ fn manifest_rejects_explicit_empty_fields_list() {
 #[test]
 fn load_dir_is_recursive_deterministic_and_skips_non_manifest_files() {
     let dir = tempfile::tempdir().unwrap();
-    write(dir.path(), "b.yaml", "consumer: 1\nid: b\nconsumes: [{contract: orders}]\n");
-    write(dir.path(), "sub/a.yml", "consumer: 1\nid: a\nconsumes: [{contract: orders}]\n");
+    write(
+        dir.path(),
+        "b.yaml",
+        "consumer: 1\nid: b\nconsumes: [{contract: orders}]\n",
+    );
+    write(
+        dir.path(),
+        "sub/a.yml",
+        "consumer: 1\nid: a\nconsumes: [{contract: orders}]\n",
+    );
     write(dir.path(), "README.md", "not a manifest");
-    let ids: Vec<String> = load_dir(dir.path()).unwrap().into_iter().map(|m| m.id).collect();
+    let ids: Vec<String> = load_dir(dir.path())
+        .unwrap()
+        .into_iter()
+        .map(|m| m.id)
+        .collect();
     // Sorted by path: b.yaml < sub/a.yml.
     assert_eq!(ids, vec!["b", "a"]);
 }
@@ -138,7 +157,11 @@ fn load_dir_refuses_an_empty_directory() {
 #[test]
 fn load_dir_fails_on_an_invalid_manifest() {
     let dir = tempfile::tempdir().unwrap();
-    write(dir.path(), "ok.yaml", "consumer: 1\nid: ok\nconsumes: [{contract: orders}]\n");
+    write(
+        dir.path(),
+        "ok.yaml",
+        "consumer: 1\nid: ok\nconsumes: [{contract: orders}]\n",
+    );
     write(dir.path(), "bad.yaml", "consumer: 1\nid: bad\n");
     assert!(load_dir(dir.path()).is_err());
 }
@@ -149,10 +172,18 @@ fn load_dir_does_not_recurse_through_symlinked_directories() {
     // A symlink back to the root would recurse forever if followed; a
     // symlinked manifest FILE should still load.
     let dir = tempfile::tempdir().unwrap();
-    write(dir.path(), "a.yaml", "consumer: 1\nid: a\nconsumes: [{contract: orders}]\n");
+    write(
+        dir.path(),
+        "a.yaml",
+        "consumer: 1\nid: a\nconsumes: [{contract: orders}]\n",
+    );
     std::os::unix::fs::symlink(dir.path(), dir.path().join("cycle")).unwrap();
     std::os::unix::fs::symlink(dir.path().join("a.yaml"), dir.path().join("link.yaml")).unwrap();
-    let ids: Vec<String> = load_dir(dir.path()).unwrap().into_iter().map(|m| m.id).collect();
+    let ids: Vec<String> = load_dir(dir.path())
+        .unwrap()
+        .into_iter()
+        .map(|m| m.id)
+        .collect();
     assert_eq!(ids, vec!["a", "a"], "real file + symlinked file, no cycle");
 }
 
@@ -186,10 +217,13 @@ fn field_removal_hits_the_consumer_that_declared_it() {
 #[test]
 fn producer_side_changes_never_hit_consumers() {
     // min tightened + field became required: both producer-impact.
-    let new = OLD
-        .replace("min: 0", "min: 100")
-        .replace("currency: { type: string,", "currency: { type: string, required: true,");
-    let m = manifest("consumer: 1\nid: r\nconsumes: [{contract: orders, fields: [amount, currency]}]\n");
+    let new = OLD.replace("min: 0", "min: 100").replace(
+        "currency: { type: string,",
+        "currency: { type: string, required: true,",
+    );
+    let m = manifest(
+        "consumer: 1\nid: r\nconsumes: [{contract: orders, fields: [amount, currency]}]\n",
+    );
     let report = radius(OLD, &new, &[m]);
     let ci = report.consumer_impact.unwrap();
     assert!(ci.impacted.is_empty(), "{:?}", ci.impacted);
@@ -199,7 +233,8 @@ fn producer_side_changes_never_hit_consumers() {
 #[test]
 fn whole_model_consumer_is_hit_by_any_consumer_impacting_field_change() {
     let new = OLD.replace("      email:    { type: string, nullable: true }\n", "");
-    let m = manifest("consumer: 1\nid: replicator\nconsumes: [{contract: orders, model: orders}]\n");
+    let m =
+        manifest("consumer: 1\nid: replicator\nconsumes: [{contract: orders, model: orders}]\n");
     let report = radius(OLD, &new, &[m]);
     let ci = report.consumer_impact.unwrap();
     assert_eq!(ci.impacted.len(), 1);
@@ -209,7 +244,10 @@ fn whole_model_consumer_is_hit_by_any_consumer_impacting_field_change() {
 #[test]
 fn omitted_model_matches_any_model_of_the_contract() {
     // refund_id removed from the refunds model; the consumer names no model.
-    let new = OLD.replace("      refund_id: { type: string, required: true }\n", "      other: { type: string }\n");
+    let new = OLD.replace(
+        "      refund_id: { type: string, required: true }\n",
+        "      other: { type: string }\n",
+    );
     let m = manifest("consumer: 1\nid: r\nconsumes: [{contract: orders, fields: [refund_id]}]\n");
     let report = radius(OLD, &new, &[m]);
     assert_eq!(report.consumer_impact.unwrap().impacted.len(), 1);
@@ -217,7 +255,10 @@ fn omitted_model_matches_any_model_of_the_contract() {
 
 #[test]
 fn model_scoped_consumer_ignores_changes_in_other_models() {
-    let new = OLD.replace("      refund_id: { type: string, required: true }\n", "      other: { type: string }\n");
+    let new = OLD.replace(
+        "      refund_id: { type: string, required: true }\n",
+        "      other: { type: string }\n",
+    );
     let m = manifest("consumer: 1\nid: r\nconsumes: [{contract: orders, model: orders}]\n");
     let report = radius(OLD, &new, &[m]);
     let ci = report.consumer_impact.unwrap();
@@ -251,7 +292,9 @@ models:
       currency: { type: string, allowed: [USD, EUR] }
       email:    { type: string, nullable: true }
 "#;
-    let m = manifest("consumer: 1\nid: r\nconsumes: [{contract: orders, model: refunds, fields: [refund_id]}]\n");
+    let m = manifest(
+        "consumer: 1\nid: r\nconsumes: [{contract: orders, model: refunds, fields: [refund_id]}]\n",
+    );
     let report = radius(OLD, new, &[m]);
     let ci = report.consumer_impact.unwrap();
     assert_eq!(ci.impacted.len(), 1);
@@ -284,7 +327,10 @@ fn the_version_bump_finding_alone_is_not_a_blast_radius() {
     let new = OLD.replace("nullable: true", "nullable: false");
     let m = manifest("consumer: 1\nid: r\nconsumes: [{contract: orders}]\n");
     let report = radius(OLD, &new, &[m]);
-    assert!(report.changes.iter().any(|c| c.path == "version"), "precondition");
+    assert!(
+        report.changes.iter().any(|c| c.path == "version"),
+        "precondition"
+    );
     let ci = report.consumer_impact.unwrap();
     assert!(ci.impacted.is_empty(), "{:?}", ci.impacted);
     assert_eq!(ci.unaffected, vec!["r"]);
@@ -296,8 +342,11 @@ fn severity_is_the_worst_hit_and_impacted_sorts_worst_first() {
     let new = OLD
         .replace("      email:    { type: string, nullable: true }\n", "")
         .replace("allowed: [USD, EUR]", "allowed: [USD, EUR, JPY]");
-    let worst = manifest("consumer: 1\nid: a_worst\nconsumes: [{contract: orders, fields: [email, currency]}]\n");
-    let mild = manifest("consumer: 1\nid: z_mild\nconsumes: [{contract: orders, fields: [currency]}]\n");
+    let worst = manifest(
+        "consumer: 1\nid: a_worst\nconsumes: [{contract: orders, fields: [email, currency]}]\n",
+    );
+    let mild =
+        manifest("consumer: 1\nid: z_mild\nconsumes: [{contract: orders, fields: [currency]}]\n");
     // Pass the mild one first: sorting must be by severity, not input order.
     let report = radius(OLD, &new, &[mild, worst]);
     let ci = report.consumer_impact.unwrap();
@@ -400,10 +449,15 @@ fn verify_against_flags_missing_fields_and_models() {
     );
     let findings = m.verify_against(&contract(OLD));
     assert_eq!(findings.len(), 2, "{findings:?}");
-    assert!(findings.iter().any(|f| f.path == "consumes[0].fields.ghost"
-        && f.message.contains("not enforced")));
-    assert!(findings.iter().any(|f| f.path == "consumes[1].model"
-        && f.message.contains("available: orders, refunds")));
+    assert!(findings
+        .iter()
+        .any(|f| f.path == "consumes[0].fields.ghost" && f.message.contains("not enforced")));
+    assert!(
+        findings
+            .iter()
+            .any(|f| f.path == "consumes[1].model"
+                && f.message.contains("available: orders, refunds"))
+    );
 }
 
 #[test]
@@ -418,20 +472,39 @@ fn verify_against_grades_version_pin_drift() {
     // Major behind = error; minor behind = warning; ahead = warning.
     let stale = manifest("consumer: 1\nid: a\nconsumes: [{contract: orders, verified: 1.9.0}]\n");
     let findings = stale.verify_against(&doc);
-    assert!(findings.iter().any(|f| matches!(f.level, covenant::spec::LintLevel::Error)
-        && f.message.contains("major")), "{findings:?}");
+    assert!(
+        findings
+            .iter()
+            .any(|f| matches!(f.level, covenant::spec::LintLevel::Error)
+                && f.message.contains("major")),
+        "{findings:?}"
+    );
 
     let drift = manifest("consumer: 1\nid: b\nconsumes: [{contract: orders, verified: 2.0.0}]\n");
     let findings = drift.verify_against(&doc);
     assert_eq!(findings.len(), 1);
-    assert!(matches!(findings[0].level, covenant::spec::LintLevel::Warning));
-    assert!(findings[0].message.contains("v2.0.0 -> v2.1.0"), "{}", findings[0].message);
+    assert!(matches!(
+        findings[0].level,
+        covenant::spec::LintLevel::Warning
+    ));
+    assert!(
+        findings[0].message.contains("v2.0.0 -> v2.1.0"),
+        "{}",
+        findings[0].message
+    );
 
     let ahead = manifest("consumer: 1\nid: c\nconsumes: [{contract: orders, verified: 3.0.0}]\n");
     let findings = ahead.verify_against(&doc);
     assert_eq!(findings.len(), 1);
-    assert!(matches!(findings[0].level, covenant::spec::LintLevel::Warning));
-    assert!(findings[0].message.contains("ahead"), "{}", findings[0].message);
+    assert!(matches!(
+        findings[0].level,
+        covenant::spec::LintLevel::Warning
+    ));
+    assert!(
+        findings[0].message.contains("ahead"),
+        "{}",
+        findings[0].message
+    );
 }
 
 #[test]
@@ -443,14 +516,24 @@ fn a_0x_minor_bump_past_the_pin_is_breaking_not_a_warning() {
     let pinned = manifest("consumer: 1\nid: r\nconsumes: [{contract: orders, verified: 0.1.0}]\n");
     let findings = pinned.verify_against(&doc);
     assert_eq!(findings.len(), 1, "{findings:?}");
-    assert!(matches!(findings[0].level, covenant::spec::LintLevel::Error));
-    assert!(findings[0].message.contains("0.x minor"), "{}", findings[0].message);
+    assert!(matches!(
+        findings[0].level,
+        covenant::spec::LintLevel::Error
+    ));
+    assert!(
+        findings[0].message.contains("0.x minor"),
+        "{}",
+        findings[0].message
+    );
 
     // A 0.x PATCH bump stays a warning — that segment is non-breaking.
     let doc = contract(&OLD.replace("version: 1.0.0", "version: 0.1.5"));
     let findings = pinned.verify_against(&doc);
     assert_eq!(findings.len(), 1, "{findings:?}");
-    assert!(matches!(findings[0].level, covenant::spec::LintLevel::Warning));
+    assert!(matches!(
+        findings[0].level,
+        covenant::spec::LintLevel::Warning
+    ));
 }
 
 #[test]
@@ -466,8 +549,11 @@ fn manifest_rejects_a_non_semver_pin() {
 #[test]
 fn scoping_filters_fields_and_switches_strict_off() {
     let doc = contract(OLD);
-    let m = manifest("consumer: 1\nid: r\nconsumes: [{contract: orders, model: orders, fields: [amount]}]\n");
-    let scoped = covenant::consumers::scope_contract_to_consumer(&doc, "orders", &m, "<t>").unwrap();
+    let m = manifest(
+        "consumer: 1\nid: r\nconsumes: [{contract: orders, model: orders, fields: [amount]}]\n",
+    );
+    let scoped =
+        covenant::consumers::scope_contract_to_consumer(&doc, "orders", &m, "<t>").unwrap();
     let model = &scoped.models["orders"];
     assert!(!model.strict);
     assert_eq!(model.fields.keys().collect::<Vec<_>>(), vec!["amount"]);
@@ -479,7 +565,8 @@ fn scoping_filters_fields_and_switches_strict_off() {
 fn scoping_keeps_all_fields_for_a_whole_model_consumer() {
     let doc = contract(OLD);
     let m = manifest("consumer: 1\nid: r\nconsumes: [{contract: orders, model: orders}]\n");
-    let scoped = covenant::consumers::scope_contract_to_consumer(&doc, "orders", &m, "<t>").unwrap();
+    let scoped =
+        covenant::consumers::scope_contract_to_consumer(&doc, "orders", &m, "<t>").unwrap();
     let model = &scoped.models["orders"];
     assert!(!model.strict);
     assert_eq!(model.fields.len(), doc.models["orders"].fields.len());
@@ -493,9 +580,12 @@ fn scoping_refuses_when_the_declared_fields_all_live_in_another_model() {
     // "contract declares no fields" compile error blaming a valid contract.
     let doc = contract(OLD);
     let m = manifest("consumer: 1\nid: r\nconsumes: [{contract: orders, fields: [refund_id]}]\n");
-    let err = covenant::consumers::scope_contract_to_consumer(&doc, "orders", &m, "<t>")
-        .unwrap_err();
-    assert!(err.to_string().contains("declares no fields of model"), "{err}");
+    let err =
+        covenant::consumers::scope_contract_to_consumer(&doc, "orders", &m, "<t>").unwrap_err();
+    assert!(
+        err.to_string().contains("declares no fields of model"),
+        "{err}"
+    );
 }
 
 #[test]
@@ -504,8 +594,7 @@ fn scoping_returns_an_error_for_an_unknown_model_name_instead_of_panicking() {
     // Whole-contract block: the blocks filter matches any model name, so a
     // bad name used to reach an expect() — it must be a ModelNotFound error.
     let m = manifest("consumer: 1\nid: r\nconsumes: [{contract: orders, fields: [amount]}]\n");
-    let err = covenant::consumers::scope_contract_to_consumer(&doc, "typo", &m, "<t>")
-        .unwrap_err();
+    let err = covenant::consumers::scope_contract_to_consumer(&doc, "typo", &m, "<t>").unwrap_err();
     assert!(err.to_string().contains("not found in contract"), "{err}");
 }
 
@@ -513,13 +602,13 @@ fn scoping_returns_an_error_for_an_unknown_model_name_instead_of_panicking() {
 fn scoping_refuses_a_stale_or_unrelated_manifest() {
     let doc = contract(OLD);
     let stale = manifest("consumer: 1\nid: r\nconsumes: [{contract: orders, fields: [ghost]}]\n");
-    let err = covenant::consumers::scope_contract_to_consumer(&doc, "orders", &stale, "<t>")
-        .unwrap_err();
+    let err =
+        covenant::consumers::scope_contract_to_consumer(&doc, "orders", &stale, "<t>").unwrap_err();
     assert!(err.to_string().contains("consumer-check"), "{err}");
 
     let other = manifest("consumer: 1\nid: r\nconsumes: [{contract: payments, fields: [x]}]\n");
-    let err = covenant::consumers::scope_contract_to_consumer(&doc, "orders", &other, "<t>")
-        .unwrap_err();
+    let err =
+        covenant::consumers::scope_contract_to_consumer(&doc, "orders", &other, "<t>").unwrap_err();
     assert!(err.to_string().contains("declares nothing"), "{err}");
 }
 
@@ -544,8 +633,11 @@ fn cli_diff_with_consumers_renders_the_blast_radius() {
     let (old, new) = cli_fixtures(dir.path());
     write(&dir.path().join("consumers"), "rollup.yaml",
         "consumer: 1\nid: rollup\nowner: fin@acme.io\nconsumes: [{contract: orders, fields: [email]}]\n");
-    write(&dir.path().join("consumers"), "safe.yaml",
-        "consumer: 1\nid: safe\nconsumes: [{contract: orders, fields: [order_id]}]\n");
+    write(
+        &dir.path().join("consumers"),
+        "safe.yaml",
+        "consumer: 1\nid: safe\nconsumes: [{contract: orders, fields: [order_id]}]\n",
+    );
     let out = Command::new(BIN)
         .args(["diff"])
         .arg(&old)
@@ -556,8 +648,14 @@ fn cli_diff_with_consumers_renders_the_blast_radius() {
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert_eq!(out.status.code(), Some(1), "{stdout}");
-    assert!(stdout.contains("impacted consumers (2 manifests, 2 consume orders)"), "{stdout}");
-    assert!(stdout.contains("rollup (fin@acme.io) via email"), "{stdout}");
+    assert!(
+        stdout.contains("impacted consumers (2 manifests, 2 consume orders)"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("rollup (fin@acme.io) via email"),
+        "{stdout}"
+    );
     assert!(stdout.contains("unaffected: safe"), "{stdout}");
 }
 
@@ -565,8 +663,11 @@ fn cli_diff_with_consumers_renders_the_blast_radius() {
 fn cli_diff_json_includes_consumer_impact_only_when_requested() {
     let dir = tempfile::tempdir().unwrap();
     let (old, new) = cli_fixtures(dir.path());
-    write(&dir.path().join("consumers"), "rollup.yaml",
-        "consumer: 1\nid: rollup\nconsumes: [{contract: orders, fields: [email]}]\n");
+    write(
+        &dir.path().join("consumers"),
+        "rollup.yaml",
+        "consumer: 1\nid: rollup\nconsumes: [{contract: orders, fields: [email]}]\n",
+    );
 
     let with = Command::new(BIN)
         .args(["diff"])
@@ -579,7 +680,10 @@ fn cli_diff_json_includes_consumer_impact_only_when_requested() {
         .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&with.stdout).unwrap();
     assert_eq!(json["consumer_impact"]["impacted"][0]["consumer"], "rollup");
-    assert_eq!(json["consumer_impact"]["impacted"][0]["severity"], "breaking");
+    assert_eq!(
+        json["consumer_impact"]["impacted"][0]["severity"],
+        "breaking"
+    );
 
     let without = Command::new(BIN)
         .args(["diff"])
@@ -596,8 +700,11 @@ fn cli_diff_json_includes_consumer_impact_only_when_requested() {
 fn fail_on_breaking_with_consumers_passes_when_nobody_declared_the_field() {
     let dir = tempfile::tempdir().unwrap();
     let (old, new) = cli_fixtures(dir.path());
-    write(&dir.path().join("consumers"), "safe.yaml",
-        "consumer: 1\nid: safe\nconsumes: [{contract: orders, fields: [order_id]}]\n");
+    write(
+        &dir.path().join("consumers"),
+        "safe.yaml",
+        "consumer: 1\nid: safe\nconsumes: [{contract: orders, fields: [order_id]}]\n",
+    );
     let out = Command::new(BIN)
         .args(["diff"])
         .arg(&old)
@@ -607,15 +714,23 @@ fn fail_on_breaking_with_consumers_passes_when_nobody_declared_the_field() {
         .args(["--fail-on", "breaking-with-consumers"])
         .output()
         .unwrap();
-    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stdout));
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
 }
 
 #[test]
 fn fail_on_breaking_with_consumers_fails_on_a_declared_hit() {
     let dir = tempfile::tempdir().unwrap();
     let (old, new) = cli_fixtures(dir.path());
-    write(&dir.path().join("consumers"), "rollup.yaml",
-        "consumer: 1\nid: rollup\nconsumes: [{contract: orders, fields: [email]}]\n");
+    write(
+        &dir.path().join("consumers"),
+        "rollup.yaml",
+        "consumer: 1\nid: rollup\nconsumes: [{contract: orders, fields: [email]}]\n",
+    );
     let out = Command::new(BIN)
         .args(["diff"])
         .arg(&old)
@@ -625,7 +740,12 @@ fn fail_on_breaking_with_consumers_fails_on_a_declared_hit() {
         .args(["--fail-on", "breaking-with-consumers"])
         .output()
         .unwrap();
-    assert_eq!(out.status.code(), Some(1), "{}", String::from_utf8_lossy(&out.stdout));
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
 }
 
 #[test]
@@ -640,7 +760,10 @@ fn fail_on_breaking_with_consumers_without_manifests_is_a_usage_error() {
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("--consumers"), "stderr should name the fix");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("--consumers"),
+        "stderr should name the fix"
+    );
 }
 
 #[test]
@@ -649,8 +772,11 @@ fn cli_consumer_check_exit_codes_and_output() {
     let contract_path = write(dir.path(), "c.yaml", OLD);
     write(&dir.path().join("m"), "good.yaml",
         "consumer: 1\nid: good\nconsumes: [{contract: orders, model: orders, fields: [amount], verified: 1.0.0}]\n");
-    write(&dir.path().join("m"), "other.yaml",
-        "consumer: 1\nid: other\nconsumes: [{contract: payments, fields: [x]}]\n");
+    write(
+        &dir.path().join("m"),
+        "other.yaml",
+        "consumer: 1\nid: other\nconsumes: [{contract: payments, fields: [x]}]\n",
+    );
 
     // Consistent set: exit 0, human output shows OK and the skip.
     let out = Command::new(BIN)
@@ -664,11 +790,17 @@ fn cli_consumer_check_exit_codes_and_output() {
     assert_eq!(out.status.code(), Some(0), "{stdout}");
     assert!(stdout.contains("OK    good"), "{stdout}");
     assert!(stdout.contains("skip  other"), "{stdout}");
-    assert!(stdout.contains("1 ok · 0 failed · 0 warned · 1 skipped"), "{stdout}");
+    assert!(
+        stdout.contains("1 ok · 0 failed · 0 warned · 1 skipped"),
+        "{stdout}"
+    );
 
     // A stale manifest fails the run with exit 1 and JSON carries findings.
-    write(&dir.path().join("m"), "stale.yaml",
-        "consumer: 1\nid: stale\nconsumes: [{contract: orders, fields: [ghost]}]\n");
+    write(
+        &dir.path().join("m"),
+        "stale.yaml",
+        "consumer: 1\nid: stale\nconsumes: [{contract: orders, fields: [ghost]}]\n",
+    );
     let out = Command::new(BIN)
         .args(["consumer-check"])
         .arg(dir.path().join("m"))
@@ -715,8 +847,11 @@ fn cli_consumer_check_refuses_an_invalid_contract() {
         "bad.yaml",
         "covenant: 1\nid: orders\nversion: \"1.0\"\nmodels: { m: { fields: { a: { type: string } } } }\n",
     );
-    let manifest_path = write(dir.path(), "m.yaml",
-        "consumer: 1\nid: pinned\nconsumes: [{contract: orders, fields: [a], verified: 1.0.0}]\n");
+    let manifest_path = write(
+        dir.path(),
+        "m.yaml",
+        "consumer: 1\nid: pinned\nconsumes: [{contract: orders, fields: [a], verified: 1.0.0}]\n",
+    );
     let out = Command::new(BIN)
         .args(["consumer-check"])
         .arg(&manifest_path)
@@ -724,7 +859,12 @@ fn cli_consumer_check_refuses_an_invalid_contract() {
         .arg(&contract_path)
         .output()
         .unwrap();
-    assert_eq!(out.status.code(), Some(2), "{}", String::from_utf8_lossy(&out.stdout));
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
     assert!(
         String::from_utf8_lossy(&out.stderr).contains("invalid"),
         "stderr should blame the contract, not the consumer"
@@ -739,8 +879,11 @@ fn cli_check_as_consumer_scopes_the_verdict_to_declared_fields() {
         "consumer: 1\nid: amounts_job\nconsumes: [{contract: orders, model: orders, fields: [amount]}]\n");
     // Dirt ONLY in fields this consumer never reads: order_id has the wrong
     // type, an undeclared field appears despite strict: true.
-    let clean_for_consumer = write(dir.path(), "clean.ndjson",
-        "{\"order_id\": 123, \"amount\": 5, \"zzz\": true}\n");
+    let clean_for_consumer = write(
+        dir.path(),
+        "clean.ndjson",
+        "{\"order_id\": 123, \"amount\": 5, \"zzz\": true}\n",
+    );
     let out = Command::new(BIN)
         .args(["check"])
         .arg(&clean_for_consumer)
@@ -752,7 +895,10 @@ fn cli_check_as_consumer_scopes_the_verdict_to_declared_fields() {
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert_eq!(out.status.code(), Some(0), "{stdout}");
-    assert!(stdout.contains("checking as consumer amounts_job — 1 of 4 fields"), "{stdout}");
+    assert!(
+        stdout.contains("checking as consumer amounts_job — 1 of 4 fields"),
+        "{stdout}"
+    );
 
     // The JSON report must carry the scoping marker — a scoped verdict is
     // not full conformance to the contract version it names.
@@ -780,11 +926,19 @@ fn cli_check_as_consumer_scopes_the_verdict_to_declared_fields() {
         .arg(&manifest_path)
         .output()
         .unwrap();
-    assert_eq!(out.status.code(), Some(1), "{}", String::from_utf8_lossy(&out.stdout));
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
 
     // A stale manifest cannot scope a check: hard error, not a narrower run.
-    let stale_path = write(dir.path(), "stale.yaml",
-        "consumer: 1\nid: stale\nconsumes: [{contract: orders, fields: [ghost]}]\n");
+    let stale_path = write(
+        dir.path(),
+        "stale.yaml",
+        "consumer: 1\nid: stale\nconsumes: [{contract: orders, fields: [ghost]}]\n",
+    );
     let out = Command::new(BIN)
         .args(["check"])
         .arg(&clean_for_consumer)
@@ -811,7 +965,12 @@ fn cli_consumers_pointing_at_an_empty_dir_is_an_error() {
         .arg(dir.path().join("empty"))
         .output()
         .unwrap();
-    assert_eq!(out.status.code(), Some(2), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     assert!(
         String::from_utf8_lossy(&out.stderr).contains("no consumer manifests"),
         "stderr should explain the empty directory"
@@ -826,9 +985,16 @@ fn reading_a_deprecated_field_warns_with_the_migration_note() {
     let m = manifest("consumer: 1\nid: r\nconsumes: [{contract: orders, fields: [email, ok]}]\n");
     let findings = m.verify_against(&doc);
     assert_eq!(findings.len(), 1, "{findings:?}");
-    assert!(matches!(findings[0].level, covenant::spec::LintLevel::Warning));
+    assert!(matches!(
+        findings[0].level,
+        covenant::spec::LintLevel::Warning
+    ));
     assert_eq!(findings[0].path, "consumes[0].fields.email");
-    assert!(findings[0].message.contains("use contact_id"), "{}", findings[0].message);
+    assert!(
+        findings[0].message.contains("use contact_id"),
+        "{}",
+        findings[0].message
+    );
 }
 
 #[test]
@@ -840,7 +1006,9 @@ fn a_bare_deprecated_true_warns_without_a_note() {
     let findings = m.verify_against(&doc);
     assert_eq!(findings.len(), 1, "{findings:?}");
     assert!(
-        findings[0].message.contains("is deprecated — plan migration"),
+        findings[0]
+            .message
+            .contains("is deprecated — plan migration"),
         "{}",
         findings[0].message
     );
@@ -857,9 +1025,16 @@ fn a_whole_model_block_is_warned_about_deprecated_fields_too() {
     let m = manifest("consumer: 1\nid: firehose\nconsumes: [{contract: orders, model: orders}]\n");
     let findings = m.verify_against(&doc);
     assert_eq!(findings.len(), 1, "{findings:?}");
-    assert!(matches!(findings[0].level, covenant::spec::LintLevel::Warning));
+    assert!(matches!(
+        findings[0].level,
+        covenant::spec::LintLevel::Warning
+    ));
     assert_eq!(findings[0].path, "consumes[0]");
-    assert!(findings[0].message.contains("deprecated field(s) email"), "{}", findings[0].message);
+    assert!(
+        findings[0].message.contains("deprecated field(s) email"),
+        "{}",
+        findings[0].message
+    );
 
     // A MATCHING whole-model block over a model holding nothing deprecated
     // stays silent — the check runs and finds nothing, it isn't skipped.

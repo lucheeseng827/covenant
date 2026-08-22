@@ -46,7 +46,9 @@ fn app_with(
 }
 
 async fn body_json(resp: axum::response::Response) -> serde_json::Value {
-    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+        .await
+        .unwrap();
     serde_json::from_slice(&bytes).unwrap()
 }
 
@@ -72,14 +74,21 @@ async fn contract_endpoint_serves_document_and_findings() {
     assert_eq!(resp.status(), StatusCode::OK);
     let j = body_json(resp).await;
     assert_eq!(j["contract"]["id"], "orders");
-    assert_eq!(j["contract"]["models"]["orders"]["fields"]["amount"]["type"], "integer");
+    assert_eq!(
+        j["contract"]["models"]["orders"]["fields"]["amount"]["type"],
+        "integer"
+    );
     assert!(j["findings"].is_array());
 }
 
 #[tokio::test]
 async fn validate_lints_and_rejects_garbage() {
     let resp = app()
-        .oneshot(Request::post("/v1/validate").body(Body::from(CONTRACT)).unwrap())
+        .oneshot(
+            Request::post("/v1/validate")
+                .body(Body::from(CONTRACT))
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -87,7 +96,11 @@ async fn validate_lints_and_rejects_garbage() {
     assert_eq!(j["enforceable"], true);
 
     let resp = app()
-        .oneshot(Request::post("/v1/validate").body(Body::from("covenant: [nope")).unwrap())
+        .oneshot(
+            Request::post("/v1/validate")
+                .body(Body::from("covenant: [nope"))
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
@@ -119,7 +132,10 @@ async fn check_returns_a_full_report() {
 
 #[tokio::test]
 async fn diff_classifies_and_rejects_garbage() {
-    let new_contract = CONTRACT.replace("amount:   { type: integer, required: true, min: 0, max: 100 }\n      ", "");
+    let new_contract = CONTRACT.replace(
+        "amount:   { type: integer, required: true, min: 0, max: 100 }\n      ",
+        "",
+    );
     let body = serde_json::json!({ "old": CONTRACT, "new": new_contract }).to_string();
     let resp = app()
         .oneshot(
@@ -157,12 +173,16 @@ async fn diff_attaches_the_blast_radius_when_manifests_are_sent() {
     // amount removed -> breaking (consumers); one manifest declares it,
     // one declares an untouched field.
     let new_contract = CONTRACT
-        .replace("amount:   { type: integer, required: true, min: 0, max: 100 }\n      ", "")
+        .replace(
+            "amount:   { type: integer, required: true, min: 0, max: 100 }\n      ",
+            "",
+        )
         .replace("version: 1.2.0", "version: 2.0.0");
     let hit = "consumer: 1\nid: rollup\nowner: fin@acme.io\nconsumes: [{contract: orders, fields: [amount]}]\n";
     let safe = "consumer: 1\nid: alerting\nconsumes: [{contract: orders, fields: [order_id]}]\n";
-    let body = serde_json::json!({ "old": CONTRACT, "new": new_contract, "consumers": [hit, safe] })
-        .to_string();
+    let body =
+        serde_json::json!({ "old": CONTRACT, "new": new_contract, "consumers": [hit, safe] })
+            .to_string();
     let resp = app()
         .oneshot(
             Request::post("/v1/diff")
@@ -204,7 +224,8 @@ async fn diff_attaches_the_blast_radius_when_manifests_are_sent() {
 
 #[tokio::test]
 async fn consumers_verify_grades_each_manifest_against_the_served_contract() {
-    let good = "consumer: 1\nid: good\nconsumes: [{contract: orders, fields: [amount], verified: 1.2.0}]";
+    let good =
+        "consumer: 1\nid: good\nconsumes: [{contract: orders, fields: [amount], verified: 1.2.0}]";
     let stale = "consumer: 1\nid: stale\nconsumes: [{contract: orders, fields: [ghost]}]";
     let other = "consumer: 1\nid: other\nconsumes: [{contract: payments, fields: [x]}]";
     let body = serde_json::json!({ "manifests": [good, stale, other] }).to_string();
@@ -245,7 +266,9 @@ async fn consumers_verify_grades_each_manifest_against_the_served_contract() {
     // not a clean 200 a misconfigured CI job would pass on forever.
     for manifests in [
         serde_json::json!([]),
-        serde_json::json!(["consumer: 1\nid: other\nconsumes: [{contract: payments, fields: [x]}]"]),
+        serde_json::json!([
+            "consumer: 1\nid: other\nconsumes: [{contract: payments, fields: [x]}]"
+        ]),
     ] {
         let body = serde_json::json!({ "manifests": manifests }).to_string();
         let resp = app()
@@ -259,7 +282,10 @@ async fn consumers_verify_grades_each_manifest_against_the_served_contract() {
             .unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
         let j = body_json(resp).await;
-        assert!(j["error"].as_str().unwrap().contains("nothing to verify"), "{j}");
+        assert!(
+            j["error"].as_str().unwrap().contains("nothing to verify"),
+            "{j}"
+        );
     }
 }
 
@@ -267,7 +293,10 @@ async fn consumers_verify_grades_each_manifest_against_the_served_contract() {
 async fn gate_stats_and_dlq_report_their_wiring_honestly() {
     // Unconfigured: configured:false with a hint, never a fake-empty answer.
     for route in ["/v1/gate/stats", "/v1/dlq"] {
-        let resp = app().oneshot(Request::get(route).body(Body::empty()).unwrap()).await.unwrap();
+        let resp = app()
+            .oneshot(Request::get(route).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         let j = body_json(resp).await;
         assert_eq!(j["configured"], false, "{route}: {j}");
@@ -275,10 +304,13 @@ async fn gate_stats_and_dlq_report_their_wiring_honestly() {
     }
 
     // Configured but the files aren't there yet: configured:true + note.
-    let resp = app_with(Some("/nonexistent/dlq".into()), Some("/nonexistent/stats".into()))
-        .oneshot(Request::get("/v1/gate/stats").body(Body::empty()).unwrap())
-        .await
-        .unwrap();
+    let resp = app_with(
+        Some("/nonexistent/dlq".into()),
+        Some("/nonexistent/stats".into()),
+    )
+    .oneshot(Request::get("/v1/gate/stats").body(Body::empty()).unwrap())
+    .await
+    .unwrap();
     let j = body_json(resp).await;
     assert_eq!(j["configured"], true);
     assert!(j["note"].as_str().unwrap().contains("not found"), "{j}");
@@ -311,7 +343,10 @@ async fn gate_stats_and_dlq_serve_the_phase2_files() {
     let j = body_json(resp).await;
     assert_eq!(j["configured"], true);
     assert_eq!(j["stats"]["records"], 10, "{j}");
-    assert!(j["age_seconds"].as_i64().unwrap() > 0, "snapshot is old: {j}");
+    assert!(
+        j["age_seconds"].as_i64().unwrap() > 0,
+        "snapshot is old: {j}"
+    );
 
     let resp = app_with(Some(dlq_path), Some(stats_path))
         .oneshot(Request::get("/v1/dlq?limit=2").body(Body::empty()).unwrap())
@@ -344,7 +379,7 @@ async fn dlq_tail_survives_a_seek_that_splits_a_multibyte_character() {
     // Padding line: {"p":"ééé…é"}\n — the é run starts at byte 6; target the
     // seek at byte 7 (mid-character). Solve 9 + 2N + t = TAIL_BYTES + 7.
     let mut t = tail.len() as u64;
-    if (TAIL_BYTES + 7 - 9 - t) % 2 != 0 {
+    if !(TAIL_BYTES + 7 - 9 - t).is_multiple_of(2) {
         tail.insert(0, '\n'); // blank line; the reader skips it
         t += 1;
     }
@@ -361,7 +396,11 @@ async fn dlq_tail_survives_a_seek_that_splits_a_multibyte_character() {
     std::fs::write(&dlq_path, content).unwrap();
 
     let resp = app_with(Some(dlq_path), None)
-        .oneshot(Request::get("/v1/dlq?limit=10").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::get("/v1/dlq?limit=10")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -370,7 +409,10 @@ async fn dlq_tail_survives_a_seek_that_splits_a_multibyte_character() {
     let entries = j["entries"].as_array().expect("must serve, not error");
     assert_eq!(entries.len(), 3, "{j}");
     assert_eq!(entries[0]["row"], 2);
-    assert_eq!(j["skipped"], 0, "the split padding line is dropped, not counted: {j}");
+    assert_eq!(
+        j["skipped"], 0,
+        "the split padding line is dropped, not counted: {j}"
+    );
 }
 
 #[tokio::test]
@@ -380,7 +422,9 @@ async fn console_spa_and_assets_are_embedded() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+        .await
+        .unwrap();
     let html = String::from_utf8_lossy(&bytes).to_string();
     assert!(html.contains("Covenant Console"));
 
@@ -399,5 +443,9 @@ async fn console_spa_and_assets_are_embedded() {
         )
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK, "asset {asset_path} must be embedded");
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "asset {asset_path} must be embedded"
+    );
 }

@@ -16,7 +16,7 @@ use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use crate::compile::{CompiledContract, CompiledModel};
 use crate::engine::{arrow as arrow_engine, row as row_engine, UniqueTracker};
 use crate::error::{CovenantError, Result};
-use crate::report::{Collector, CheckReport, ReportHeader, Rule, Violation};
+use crate::report::{CheckReport, Collector, ReportHeader, Rule, Violation};
 use crate::spec::FieldType;
 
 /// How many rows arrow-csv sniffs to infer column types.
