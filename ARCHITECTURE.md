@@ -176,7 +176,7 @@ roadmap, not prerequisite — the workspace build stays free of C toolchains.
 
 Lean dependency rules: the arrow/parquet **58** line is shared with the rest
 of the toolchain rather than pinned separately, so the columnar
-engine costs the monorepo nothing new; everything else is small pure-Rust
+engine adds no new dependency line; everything else is small pure-Rust
 (serde/regex/semver/chrono/indexmap). No async runtime — every enforcement
 point is a synchronous loop, which is exactly what CI steps and pipe
 interceptors want.
