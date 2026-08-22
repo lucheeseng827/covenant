@@ -1,0 +1,90 @@
+[workspace]
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "unwind"
+
+[package]
+name = "covenant"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Data-contract enforcement runtime: one compiled contract, run at every boundary the data crosses. `covenant check` gates files in CI (NDJSON/CSV/Parquet), `covenant gate` is a stdin-to-stdout stream interceptor with dead-letter envelopes, `covenant diff` classifies contract changes as breaking/risky/info with producer/consumer impact and enforces the semver bump, and the Arrow RecordBatch validator embeds in-process. A single static binary."
+homepage = "https://github.com/lucheeseng827/covenant"
+documentation = "https://docs.rs/covenant"
+readme = "README.md"
+keywords = ["data-contract", "validation", "arrow", "parquet", "data-quality"]
+categories = ["command-line-utilities", "data-structures", "development-tools"]
+# Keep the published crate lean: tests, examples and the console source are not
+# needed to build or use the library. frontend/dist IS shipped — the `serve`
+# feature embeds it with rust_embed, and a `cargo install` cannot run npm.
+exclude = ["tests/", "examples/", "frontend/src/", "frontend/node_modules/", "frontend/package*.json", "frontend/tsconfig.json", "frontend/vite.config.ts"]
+repository = "https://github.com/lucheeseng827/covenant"
+publish = true
+
+[lib]
+name = "covenant"
+path = "src/lib.rs"
+
+[[bin]]
+name = "covenant"
+path = "src/main.rs"
+
+# --- Design note: enforcement engine first, registry later ---------------------------
+# The niche's whole complaint is that data-contract tools are "an honor system with a
+# search interface" — they describe, they lint, they do not ENFORCE. So this crate is
+# built engine-first: `spec` parses, `compile` turns the spec into a CompiledContract
+# (pre-built regexes, hashed allowed-sets, resolved type matchers) and everything else —
+# the CI check, the stream gate, the Arrow batch validator — is a thin loop over that
+# one compiled artifact. Anything that needs durable state across runs — storage,
+# aggregation, notification — sits BEHIND the engine and is deliberately absent here.
+#
+# Dependency posture (lean by default): arrow/parquet ride a single shared 58
+# line rather than a separately pinned one, so the Arrow batch
+# validator costs the workspace nothing new. A real Kafka client (librdkafka: cmake +
+# C toolchain) is deliberately NOT a dependency — the stream enforcement point is the
+# transport-agnostic `covenant gate` stdin/stdout interceptor (kcat/kafka-console-*
+# pipe it into any topic today); a native `kafka` feature is a roadmap item.
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+# field order in a contract is meaning (reports/diffs follow author order), so models
+# and fields deserialize into IndexMap, not BTreeMap
+indexmap = { version = "2", features = ["serde"] }
+regex = "1"
+thiserror = "2"
+semver = "1"                                         # contract version parse + diff bump enforcement
+chrono = { version = "0.4", default-features = false, features = ["std"] }  # timestamp/date value validation
+
+# --- Arrow batch validator (DEFAULT — it is the differentiator, and the 58 line is
+# on the shared arrow line, so this pulls nothing new) -------------------------------
+arrow-array = "58"
+arrow-schema = "58"
+arrow-csv = "58"                                     # CSV → RecordBatch, so CSV checks reuse the Arrow engine
+parquet = { version = "58", default-features = false, features = ["arrow", "snap"] }
+
+# --- `serve` (OFF by default — the default build stays a lean sync binary) ---
+# The localhost console (site/console.html, embedded) + the /v1 JSON API.
+# axum 0.8 for the optional serve seam; nothing here is in a
+# default workspace build.
+axum = { version = "0.8", optional = true }
+tokio = { version = "1", features = ["rt-multi-thread"], optional = true }
+# `debug-embed` bakes frontend/dist into debug builds too, so `covenant serve`
+# is self-contained from any working directory. The
+# console is a Vite+React+TS app; its build output (frontend/dist) is
+# committed so `cargo build --features serve` needs no Node toolchain.
+rust-embed = { version = "8", features = ["debug-embed"], optional = true }
+
+[features]
+default = []
+serve = ["dep:axum", "dep:tokio", "tokio/net", "tokio/macros", "dep:rust-embed"]
+
+[dev-dependencies]
+tempfile = "3"                                       # throwaway parquet/csv/ndjson fixtures in tests
+tower = { version = "0.5", features = ["util"] }     # ServiceExt::oneshot — drive the serve router in tests, no socket

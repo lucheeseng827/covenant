@@ -1,0 +1,47 @@
+# Covenant contract for the demo orders stream.
+# Try:
+#   covenant validate examples/contracts/orders.yaml
+#   covenant check examples/data/orders.ndjson  -c examples/contracts/orders.yaml
+#   covenant check examples/data/orders_bad.ndjson -c examples/contracts/orders.yaml
+#   covenant gate -c examples/contracts/orders.yaml < examples/data/orders_bad.ndjson
+#   covenant diff examples/contracts/orders.yaml examples/contracts/orders_v2.yaml
+covenant: 1
+id: orders
+name: Orders stream
+version: 1.2.0
+owner: data-platform@acme.io
+description: One record per confirmed order, produced by checkout.
+
+models:
+  orders:
+    description: Confirmed orders
+    strict: true
+    fields:
+      order_id:
+        type: string
+        required: true
+        unique: true
+        pattern: "^ord_[a-z0-9]{12}$"
+      amount_cents:
+        type: integer
+        required: true
+        min: 0
+        max: 5000000
+      currency:
+        type: string
+        required: true
+        allowed: [USD, EUR, GBP]
+      customer_email:
+        type: string
+        format: email
+        nullable: true
+      trace_id:
+        type: uuid
+      created_at:
+        type: timestamp
+        required: true
+
+policy:
+  on_violation: block
+  max_violations: 0
+  sample_violations: 10

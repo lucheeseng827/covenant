@@ -1,0 +1,15 @@
+/target
+**/*.rs.bk
+*.pdb
+
+# Console build inputs. `frontend/dist` is deliberately NOT ignored: the `serve`
+# feature embeds it with rust_embed, and neither `cargo install` nor a CI build
+# can run npm. It is committed on purpose.
+frontend/node_modules/
+frontend/.tsbuild/
+frontend/*.tsbuildinfo
+
+# Local scratch
+*.dlq.ndjson
+*-gate-stats.json
+.env

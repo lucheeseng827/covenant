@@ -1,0 +1,8 @@
+consumer: 1
+id: looker_revenue
+owner: analytics@acme.io
+description: Looker "Revenue by currency" dashboard.
+consumes:
+  - contract: orders
+    verified: 1.2.0
+    fields: [currency, amount_cents, created_at]

@@ -1,0 +1,5 @@
+target/
+.git/
+frontend/node_modules/
+**/*.dlq.ndjson
+.env

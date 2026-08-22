@@ -1,0 +1,6 @@
+{"order_id":"ord_a1b2c3d4e5f6","amount_cents":12999,"currency":"USD","created_at":"2026-08-11T09:30:00Z"}
+{"order_id":"ORD-UPPERCASE","amount_cents":-50,"currency":"BTC","created_at":"2026-08-11T09:31:00Z"}
+{"order_id":"ord_a1b2c3d4e5f6","amount_cents":100,"currency":"USD","created_at":"2026-08-11T09:32:00Z"}
+{"amount_cents":9001,"currency":"USD","customer_email":"not-an-email","created_at":"yesterday"}
+{"order_id":"ord_d4e5f6a1b2c3","amount_cents":100,"currency":"USD","created_at":"2026-08-11T09:33:00Z","internal_debug":true}
+not even json

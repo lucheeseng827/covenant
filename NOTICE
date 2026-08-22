@@ -1,0 +1,28 @@
+Covenant — data-contract enforcement runtime
+Copyright 2026 Covenant contributors
+
+This product includes software developed by the Covenant contributors.
+
+Covenant (the `covenant` binary and library) is licensed under the Apache
+License, Version 2.0. See ./LICENSE for the full text.
+
+================================================================================
+Third-party dependencies
+================================================================================
+
+This software builds on third-party open-source components, each under its own
+license. The authoritative, version-resolved dependency list is generated at
+release time from this repository's committed Cargo.lock. Notable runtime
+dependencies include:
+
+  - arrow-array, arrow-schema,   (Apache-2.0)      — columnar in-memory data;
+    arrow-csv                                         CSV → RecordBatch reader
+  - parquet                      (Apache-2.0)      — Parquet reader for CI checks
+  - clap                         (MIT / Apache-2.0)— CLI parsing
+  - serde, serde_json            (MIT / Apache-2.0)— serialization + NDJSON rows
+  - serde_yaml                   (MIT / Apache-2.0)— contract document parsing
+  - indexmap                     (MIT / Apache-2.0)— author-ordered models/fields
+  - regex                        (MIT / Apache-2.0)— pattern constraints
+  - semver                       (MIT / Apache-2.0)— contract version discipline
+  - chrono                       (MIT / Apache-2.0)— timestamp/date validation
+  - thiserror                    (MIT / Apache-2.0)— error handling

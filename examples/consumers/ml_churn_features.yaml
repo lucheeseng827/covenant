@@ -1,0 +1,8 @@
+consumer: 1
+id: ml_churn_features
+owner: ml-platform@acme.io
+description: Nightly churn-feature job (embeds the Arrow engine).
+consumes:
+  - contract: orders
+    verified: 1.2.0
+    fields: [order_id, amount_cents]

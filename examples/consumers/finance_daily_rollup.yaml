@@ -1,0 +1,18 @@
+# Consumer manifest — what this job actually reads. Kept next to the
+# consumer's own code in real use; collected here for the demo.
+# Try:
+#   covenant diff examples/contracts/orders.yaml examples/contracts/orders_v2.yaml \
+#     --consumers examples/consumers
+#   covenant consumer-check examples/consumers -c examples/contracts/orders.yaml
+#   covenant consumer-check examples/consumers -c examples/contracts/orders_v2.yaml   # the rollup is stale
+#   covenant check examples/data/orders.ndjson -c examples/contracts/orders.yaml \
+#     --as-consumer examples/consumers/finance_daily_rollup.yaml
+consumer: 1
+id: finance_daily_rollup
+owner: finance-eng@acme.io
+description: dbt daily revenue rollup — joins orders to the ledger.
+consumes:
+  - contract: orders
+    verified: 1.2.0
+    model: orders
+    fields: [order_id, customer_email, currency, amount_cents]

@@ -1,0 +1,48 @@
+# A proposed revision of orders.yaml with deliberate compatibility hazards,
+# for demoing `covenant diff`:
+#   - customer_email removed          -> breaking (consumers)
+#   - region added as required        -> breaking (producers)
+#   - amount_cents min tightened      -> risky (producers)
+#   - allowed currency set widened    -> risky (consumers)
+# ...and the version only moved a patch, so the diff also flags the
+# insufficient semver bump.
+covenant: 1
+id: orders
+name: Orders stream
+version: 1.2.1
+owner: data-platform@acme.io
+
+models:
+  orders:
+    strict: true
+    fields:
+      order_id:
+        type: string
+        required: true
+        unique: true
+        pattern: "^ord_[a-z0-9]{12}$"
+      amount_cents:
+        type: integer
+        required: true
+        min: 100
+        max: 5000000
+      currency:
+        type: string
+        required: true
+        allowed: [USD, EUR, GBP, JPY]
+      region:
+        type: string
+        required: true
+        allowed: [us, eu, apac]
+      trace_id:
+        type: uuid
+      created_at:
+        type: timestamp
+        required: true
+
+# Policy kept identical to orders.yaml so the diff shows ONLY the four
+# hazards listed in the header (policy changes are diffable findings too).
+policy:
+  on_violation: block
+  max_violations: 0
+  sample_violations: 10

@@ -1,0 +1,8 @@
+consumer: 1
+id: ops_alerting
+owner: ops@acme.io
+description: Alerting job — only watches order recency.
+consumes:
+  - contract: orders
+    verified: 1.2.0
+    fields: [created_at]
