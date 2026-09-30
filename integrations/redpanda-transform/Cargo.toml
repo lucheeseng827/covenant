@@ -1,0 +1,37 @@
+# Covenant as a Redpanda Data Transform: the gate running inside the broker,
+# compiled to WebAssembly, judging every record written to a topic. A
+# standalone workspace with its own lock: it builds for wasm32-wasip1 and
+# links the transform SDK, which the engine itself never does.
+[workspace]
+
+[package]
+name = "covenant-redpanda-transform"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "Apache-2.0"
+publish = true
+description = "A Redpanda Data Transform that enforces a Covenant data contract on every record written to its input topic."
+
+# The module rpk builds and deploys: `rpk transform build` looks for the
+# artifact under the name transform.yaml gives the transform.
+[[bin]]
+name = "covenant-gate"
+path = "src/main.rs"
+
+[dependencies]
+covenant = { package = "covenant-data", path = "../..", default-features = false }
+redpanda-transform-sdk = "1.1"
+serde_json = "1"
+
+# The build loads, lints and compiles the contract it embeds, with the engine
+# itself, so a contract the transform could not enforce fails the build.
+[build-dependencies]
+covenant = { package = "covenant-data", path = "../..", default-features = false }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

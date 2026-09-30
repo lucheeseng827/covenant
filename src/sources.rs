@@ -6,22 +6,33 @@
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
+#[cfg(feature = "arrow")]
 use std::sync::Arc;
 
+#[cfg(feature = "arrow")]
 use arrow_array::RecordBatch;
+#[cfg(feature = "arrow")]
 use arrow_csv::reader::Format;
+#[cfg(feature = "arrow")]
 use arrow_schema::{DataType, Field as ArrowField, Schema};
+#[cfg(feature = "arrow")]
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
 use crate::compile::{CompiledContract, CompiledModel};
-use crate::engine::{arrow as arrow_engine, row as row_engine, UniqueTracker};
+#[cfg(feature = "arrow")]
+use crate::engine::arrow::{self as arrow_engine, SchemaFindings};
+use crate::engine::{row as row_engine, UniqueTracker};
 use crate::error::{CovenantError, Result};
+use crate::profile::Profiler;
 use crate::report::{CheckReport, Collector, ReportHeader, Rule, Violation};
+#[cfg(feature = "arrow")]
 use crate::spec::FieldType;
 
 /// How many rows arrow-csv sniffs to infer column types.
+#[cfg(feature = "arrow")]
 const CSV_INFER_ROWS: usize = 1000;
 /// Batch size for columnar readers.
+#[cfg(feature = "arrow")]
 const BATCH_ROWS: usize = 8192;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,6 +70,18 @@ pub fn check_path(
     path: &Path,
     format: Option<DataFormat>,
 ) -> Result<CheckReport> {
+    check_path_profiled(contract, model, path, format, None)
+}
+
+/// [`check_path`], also feeding every record or batch the engines validate
+/// to `profiler` — the same read, not a second pass over the file.
+pub fn check_path_profiled(
+    contract: &CompiledContract,
+    model: &CompiledModel,
+    path: &Path,
+    format: Option<DataFormat>,
+    profiler: Option<&mut Profiler>,
+) -> Result<CheckReport> {
     let format = match format {
         Some(f) => f,
         None => DataFormat::infer(path)?,
@@ -79,10 +102,20 @@ pub fn check_path(
                 path: path.display().to_string(),
                 source: e,
             })?;
-            check_ndjson_reader(model, BufReader::new(file), &mut unique, &mut collector)?
+            check_ndjson_reader_profiled(
+                model,
+                BufReader::new(file),
+                &mut unique,
+                &mut collector,
+                profiler,
+            )?
         }
-        DataFormat::Csv => check_csv(model, path, &mut unique, &mut collector)?,
-        DataFormat::Parquet => check_parquet(model, path, &mut unique, &mut collector)?,
+        #[cfg(feature = "arrow")]
+        DataFormat::Csv => check_csv(model, path, &mut unique, &mut collector, profiler)?,
+        #[cfg(feature = "arrow")]
+        DataFormat::Parquet => check_parquet(model, path, &mut unique, &mut collector, profiler)?,
+        #[cfg(not(feature = "arrow"))]
+        DataFormat::Csv | DataFormat::Parquet => return Err(without_arrow(path, format)),
     };
 
     Ok(collector.into_report(header, rows))
@@ -97,6 +130,17 @@ pub fn check_ndjson_reader<R: BufRead>(
     reader: R,
     unique: &mut UniqueTracker,
     out: &mut Collector,
+) -> Result<u64> {
+    check_ndjson_reader_profiled(model, reader, unique, out, None)
+}
+
+/// [`check_ndjson_reader`], also profiling each record it validates.
+pub fn check_ndjson_reader_profiled<R: BufRead>(
+    model: &CompiledModel,
+    reader: R,
+    unique: &mut UniqueTracker,
+    out: &mut Collector,
+    mut profiler: Option<&mut Profiler>,
 ) -> Result<u64> {
     let mut rows: u64 = 0;
     let mut scratch: Vec<Violation> = Vec::new();
@@ -113,12 +157,47 @@ pub fn check_ndjson_reader<R: BufRead>(
         match serde_json::from_str::<serde_json::Value>(&line) {
             Ok(record) => {
                 scratch.clear();
-                row_engine::validate_record(model, &record, row, Some(unique), &mut scratch);
+                match profiler.as_deref_mut() {
+                    // Validation hands each value it looks up to the profiler.
+                    Some(p) if record.is_object() => {
+                        p.start_record();
+                        row_engine::validate_record_observed(
+                            model,
+                            &record,
+                            row,
+                            Some(unique),
+                            &mut scratch,
+                            |idx, v| p.observe_field(&model.fields[idx], idx, v),
+                        );
+                    }
+                    Some(p) => {
+                        p.observe_unreadable();
+                        row_engine::validate_record(
+                            model,
+                            &record,
+                            row,
+                            Some(unique),
+                            &mut scratch,
+                        );
+                    }
+                    None => {
+                        row_engine::validate_record(
+                            model,
+                            &record,
+                            row,
+                            Some(unique),
+                            &mut scratch,
+                        );
+                    }
+                }
                 for v in scratch.drain(..) {
                     out.push(v);
                 }
             }
             Err(e) => {
+                if let Some(p) = profiler.as_deref_mut() {
+                    p.observe_unreadable();
+                }
                 out.push(Violation {
                     model: model.name.clone(),
                     field: None,
@@ -126,6 +205,7 @@ pub fn check_ndjson_reader<R: BufRead>(
                     row: Some(row),
                     value: Some(crate::report::truncate(&line, 64)),
                     message: format!("row {row} (line {}): invalid JSON: {e}", line_no + 1),
+                    observed: None,
                 });
             }
         }
@@ -133,11 +213,30 @@ pub fn check_ndjson_reader<R: BufRead>(
     Ok(rows)
 }
 
+/// A build without the `arrow` feature has no columnar engine to read CSV or
+/// Parquet with: refused, never read some other, weaker way.
+#[cfg(not(feature = "arrow"))]
+pub(crate) fn without_arrow(path: &Path, format: DataFormat) -> CovenantError {
+    let name = match format {
+        DataFormat::Ndjson => "NDJSON",
+        DataFormat::Csv => "CSV",
+        DataFormat::Parquet => "Parquet",
+    };
+    CovenantError::DataRead {
+        path: path.display().to_string(),
+        message: format!(
+            "reading {name} needs the `arrow` feature, which this build of covenant leaves out"
+        ),
+    }
+}
+
+#[cfg(feature = "arrow")]
 fn check_csv(
     model: &CompiledModel,
     path: &Path,
     unique: &mut UniqueTracker,
     out: &mut Collector,
+    mut profiler: Option<&mut Profiler>,
 ) -> Result<u64> {
     let io_err = |e: std::io::Error| CovenantError::Io {
         path: path.display().to_string(),
@@ -186,11 +285,23 @@ fn check_csv(
         .build(file)
         .map_err(data_err)?;
 
+    // One file is one source: a schema problem counts once, not per batch.
+    let mut schema_findings = SchemaFindings::new();
     let mut rows: u64 = 0;
     for batch in reader {
         match batch {
             Ok(batch) => {
-                rows += arrow_engine::validate_batch(model, &batch, rows, Some(unique), out);
+                rows += arrow_engine::validate_source_batch(
+                    model,
+                    &batch,
+                    rows,
+                    Some(unique),
+                    &mut schema_findings,
+                    out,
+                );
+                if let Some(p) = profiler.as_deref_mut() {
+                    p.observe_batch(model, &batch);
+                }
             }
             // A cell that can't parse as its contract type IS bad data — a
             // violation (exit 1), not a runtime error (exit 2). arrow-csv
@@ -206,6 +317,7 @@ fn check_csv(
                     message: format!(
                         "CSV value does not parse as its contract type (checking stopped here): {e}"
                     ),
+                    observed: None,
                 });
                 break;
             }
@@ -214,16 +326,25 @@ fn check_csv(
     if rows == 0 {
         // Zero data rows must still fail schema promises (a header-only CSV
         // missing a required column is not "clean").
-        arrow_engine::validate_batch(model, &RecordBatch::new_empty(schema), 0, Some(unique), out);
+        arrow_engine::validate_source_batch(
+            model,
+            &RecordBatch::new_empty(schema),
+            0,
+            Some(unique),
+            &mut schema_findings,
+            out,
+        );
     }
     Ok(rows)
 }
 
+#[cfg(feature = "arrow")]
 fn check_parquet(
     model: &CompiledModel,
     path: &Path,
     unique: &mut UniqueTracker,
     out: &mut Collector,
+    mut profiler: Option<&mut Profiler>,
 ) -> Result<u64> {
     let file = File::open(path).map_err(|e| CovenantError::Io {
         path: path.display().to_string(),
@@ -239,14 +360,33 @@ fn check_parquet(
     let schema = builder.schema().clone();
     let reader = builder.build().map_err(|e| data_err(e.to_string()))?;
 
+    // One file is one source: a schema problem counts once, not per batch.
+    let mut schema_findings = SchemaFindings::new();
     let mut rows: u64 = 0;
     for batch in reader {
         let batch = batch.map_err(|e| data_err(e.to_string()))?;
-        rows += arrow_engine::validate_batch(model, &batch, rows, Some(unique), out);
+        rows += arrow_engine::validate_source_batch(
+            model,
+            &batch,
+            rows,
+            Some(unique),
+            &mut schema_findings,
+            out,
+        );
+        if let Some(p) = profiler.as_deref_mut() {
+            p.observe_batch(model, &batch);
+        }
     }
     if rows == 0 {
         // Zero-row files still carry a schema and must honor it.
-        arrow_engine::validate_batch(model, &RecordBatch::new_empty(schema), 0, Some(unique), out);
+        arrow_engine::validate_source_batch(
+            model,
+            &RecordBatch::new_empty(schema),
+            0,
+            Some(unique),
+            &mut schema_findings,
+            out,
+        );
     }
     Ok(rows)
 }

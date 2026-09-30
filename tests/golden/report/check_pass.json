@@ -1,0 +1,30 @@
+{
+  "report": 1,
+  "kind": "check",
+  "verdict": "pass",
+  "engine": {
+    "name": "covenant",
+    "version": "<version>"
+  },
+  "run": {
+    "plane": "cli",
+    "started_at": "<started_at>",
+    "duration_ms": 0
+  },
+  "budget": 0,
+  "violations": 0,
+  "sample_mode": "masked",
+  "checks": [
+    {
+      "contract_id": "orders",
+      "contract_version": "1.0.0",
+      "owner": "data@acme.io",
+      "model": "orders",
+      "source": "orders.ndjson",
+      "rows": 2,
+      "violations": 0,
+      "per_rule": [],
+      "samples": []
+    }
+  ]
+}

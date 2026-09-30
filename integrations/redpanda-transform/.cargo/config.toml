@@ -1,0 +1,5 @@
+# `rpk transform build` runs a bare `cargo build --release`, so the target is
+# set here, as `rpk transform init` sets it. The unit tests run on the host:
+#   cargo test --target "$(rustc -vV | sed -n 's/^host: //p')"
+[build]
+target = "wasm32-wasip1"

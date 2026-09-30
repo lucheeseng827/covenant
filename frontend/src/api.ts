@@ -28,6 +28,14 @@ export interface ViolationSample {
   message: string;
 }
 
+/** A contract rule the runtime does not enforce yet — an ODCS rule with no
+ *  exact equivalent — named by its path in the source document. */
+export interface UnenforcedRule {
+  path: string;
+  rule: string;
+  reason: string;
+}
+
 export interface CheckReport {
   contract_id: string;
   contract_version: string;
@@ -42,6 +50,10 @@ export interface CheckReport {
   violations: number;
   per_rule: RuleCount[];
   samples: ViolationSample[];
+  /** Present only when the contract runs with `--allow-unenforced` and has
+   *  rules it does not enforce: the verdict covers the rest — a partial
+   *  check. */
+  unenforced?: UnenforcedRule[];
 }
 
 export type DiffSeverity = 'info' | 'risky' | 'breaking';
@@ -76,6 +88,9 @@ export interface DiffReport {
   changes: DiffChange[];
   /** Present only when consumer manifests were sent with the request. */
   consumer_impact?: ConsumerImpactReport;
+  /** Present only for a partial diff (`covenant diff --allow-unenforced`):
+   *  rules on either side that were not compared. */
+  unenforced?: UnenforcedRule[];
 }
 
 export interface FieldDoc {
@@ -126,6 +141,9 @@ export interface ContractInfo {
   model: string;
   contract: ContractDoc;
   findings: LintFinding[];
+  /** Rules the served contract runs without (`--allow-unenforced`); empty
+   *  when every rule is enforced. */
+  unenforced: UnenforcedRule[];
 }
 
 export interface Health {

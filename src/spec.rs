@@ -246,14 +246,106 @@ pub enum LintLevel {
     Warning,
 }
 
+/// A rule in the source document that this runtime cannot enforce yet (an
+/// ODCS feature it does not implement). Refused by default; a run that
+/// allows it checks everything else and carries this list in every report,
+/// so a partial verdict can never be mistaken for a full one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct UnenforcedRule {
+    /// Where the rule lives in the source, e.g.
+    /// `schema.orders.properties.amount.quality[0]`.
+    pub path: String,
+    /// What kind of rule it is, e.g. `library rowCount` or `relationship`.
+    pub rule: String,
+    pub reason: String,
+}
+
+/// A decision the reader made on the author's behalf (e.g. a primary key
+/// checked as not null although the property said `required: false`).
+/// Surfaced by `covenant validate`; enforcement is not affected.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ConversionNote {
+    pub path: String,
+    pub message: String,
+}
+
+/// Which document format a contract was read from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "format", rename_all = "lowercase")]
+// New formats arrive in minor releases.
+#[non_exhaustive]
+pub enum SourceFormat {
+    /// A native `covenant: 1` document.
+    Covenant,
+    /// An Open Data Contract Standard v3 document.
+    Odcs { api_version: String },
+}
+
+/// A contract as read, before anything decides whether a partial one may
+/// run. `covenant: 1` documents always come back with no unenforced rules.
+#[derive(Debug, Clone)]
+pub struct LoadedContract {
+    pub contract: Contract,
+    pub format: SourceFormat,
+    pub unenforced: Vec<UnenforcedRule>,
+    pub notes: Vec<ConversionNote>,
+}
+
+impl LoadedContract {
+    /// The contract, if every rule in the source is enforced; otherwise the
+    /// refusal, naming each rule that would have been skipped.
+    pub fn into_enforceable(self, origin: &str) -> Result<Contract> {
+        if self.unenforced.is_empty() {
+            return Ok(self.contract);
+        }
+        Err(CovenantError::ContractUnenforced {
+            path: origin.to_string(),
+            count: self.unenforced.len(),
+            details: render_unenforced(&self.unenforced),
+        })
+    }
+
+    /// The contract's lint findings plus what the reader found. A rule the
+    /// runtime cannot enforce is an error — the contract promises something
+    /// no check would test — unless the run allows partial enforcement, when
+    /// it is a warning. Reader notes are always warnings.
+    pub fn lint(&self, allow_unenforced: bool) -> Vec<LintFinding> {
+        let unenforced_level = if allow_unenforced {
+            LintLevel::Warning
+        } else {
+            LintLevel::Error
+        };
+        let mut findings = self.contract.lint();
+        findings.extend(self.unenforced.iter().map(|r| LintFinding {
+            level: unenforced_level,
+            path: r.path.clone(),
+            message: format!("not enforced ({}): {}", r.rule, r.reason),
+        }));
+        findings.extend(self.notes.iter().map(|n| LintFinding {
+            level: LintLevel::Warning,
+            path: n.path.clone(),
+            message: n.message.clone(),
+        }));
+        findings
+    }
+}
+
+/// One line per rule: `  - path (rule): reason`.
+pub fn render_unenforced(rules: &[UnenforcedRule]) -> String {
+    rules
+        .iter()
+        .map(|r| format!("  - {} ({}): {}", r.path, r.rule, r.reason))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 impl Contract {
     /// Parse a contract from YAML (JSON is valid YAML, so `.json` contracts
-    /// parse through the same path).
+    /// parse through the same path). Both `covenant: 1` and ODCS v3
+    /// documents are accepted; an ODCS document with rules the runtime
+    /// cannot enforce is refused rather than half-enforced.
     pub fn parse(source: &str, origin: &str) -> Result<Contract> {
-        serde_yaml::from_str(source).map_err(|e| CovenantError::ContractParse {
-            path: origin.to_string(),
-            message: e.to_string(),
-        })
+        Contract::load(source, origin)?.into_enforceable(origin)
     }
 
     /// Resolve which model a run targets, without compiling: the requested
@@ -282,13 +374,53 @@ impl Contract {
         }
     }
 
-    /// Read and parse a contract file.
+    /// Read and parse a contract file. An ODCS contract whose rules the
+    /// runtime cannot all enforce is refused — see [`Contract::load_path`]
+    /// for the variant that lets the caller decide.
     pub fn from_path(path: &std::path::Path) -> Result<Contract> {
+        Contract::load_path(path)?.into_enforceable(&path.display().to_string())
+    }
+
+    /// Read a contract document — `covenant: 1` or ODCS v3 — WITHOUT
+    /// refusing on rules the runtime cannot enforce: they come back in
+    /// [`LoadedContract::unenforced`] and the caller decides whether a
+    /// partial check may run. [`Contract::parse`] refuses instead.
+    pub fn load(source: &str, origin: &str) -> Result<LoadedContract> {
+        // Detection only: a document that isn't valid YAML at all falls
+        // through to the native parser, so its error message is unchanged.
+        let is_odcs = serde_yaml::from_str::<serde_yaml::Value>(source)
+            .map(|v| crate::odcs::looks_like_odcs(&v))
+            .unwrap_or(false);
+        if is_odcs {
+            let read = crate::odcs::convert(source, origin)?;
+            return Ok(LoadedContract {
+                contract: read.contract,
+                format: SourceFormat::Odcs {
+                    api_version: read.api_version,
+                },
+                unenforced: read.unenforced,
+                notes: read.notes,
+            });
+        }
+        let contract = serde_yaml::from_str(source).map_err(|e| CovenantError::ContractParse {
+            path: origin.to_string(),
+            message: e.to_string(),
+        })?;
+        Ok(LoadedContract {
+            contract,
+            format: SourceFormat::Covenant,
+            unenforced: Vec::new(),
+            notes: Vec::new(),
+        })
+    }
+
+    /// [`Contract::load`] for a file.
+    pub fn load_path(path: &std::path::Path) -> Result<LoadedContract> {
         let text = std::fs::read_to_string(path).map_err(|e| CovenantError::Io {
             path: path.display().to_string(),
             source: e,
         })?;
-        Contract::parse(&text, &path.display().to_string())
+        Contract::load(&text, &path.display().to_string())
     }
 
     /// Lint the contract itself. Enforcement refuses to run against a

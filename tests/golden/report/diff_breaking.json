@@ -1,0 +1,56 @@
+{
+  "report": 1,
+  "kind": "diff",
+  "verdict": "fail",
+  "engine": {
+    "name": "covenant",
+    "version": "<version>"
+  },
+  "run": {
+    "plane": "cli",
+    "started_at": "<started_at>",
+    "duration_ms": 0
+  },
+  "diff": {
+    "contract_id": "orders",
+    "old_version": "1.0.0",
+    "new_version": "2.0.0",
+    "fail_on": "breaking",
+    "max_severity": "breaking",
+    "changes": [
+      {
+        "severity": "risky",
+        "impact": "producers",
+        "path": "models.orders.fields.amount",
+        "message": "max tightened 100 -> 50 — conforming values may start failing"
+      },
+      {
+        "severity": "breaking",
+        "impact": "consumers",
+        "path": "models.orders.fields.currency",
+        "message": "field removed — consumers reading it break"
+      }
+    ],
+    "consumer_impact": {
+      "contract": "orders",
+      "manifests": 2,
+      "consumers_of_contract": 2,
+      "impacted": [
+        {
+          "consumer": "billing",
+          "owner": "fin@acme.io",
+          "severity": "breaking",
+          "fields": [
+            "currency"
+          ],
+          "changes": [
+            "models.orders.fields.currency"
+          ]
+        }
+      ],
+      "unaffected": [
+        "ops"
+      ]
+    }
+  }
+}

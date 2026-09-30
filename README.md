@@ -1,3 +1,5 @@
+<img src="docs/images/covenant-logo.svg" alt="" width="72">
+
 # Covenant — data-contract enforcement runtime
 
 > Most data-contract tools are an honor system with a search interface.
@@ -120,6 +122,9 @@ covenant check dumps/*.ndjson -c orders.yaml --format json
 kcat -C -t orders_raw -e \
   | covenant gate -c orders.yaml --dlq /var/log/orders.dlq.ndjson \
   | kcat -P -t orders_validated
+# ...or topic to topic, with the `kafka` feature (see below)
+covenant gate -c orders.yaml --brokers localhost:9092 \
+  --from orders_raw --to orders_validated --dlq-topic orders_dlq
 
 # merge gate: block breaking contract changes in CI
 covenant diff main/orders.yaml pr/orders.yaml --fail-on breaking
@@ -192,6 +197,11 @@ TODO, because a drafted contract is not yet a promise anyone should pin to.
 
 ## The contract
 
+Covenant also reads **ODCS v3** (Open Data Contract Standard) contracts directly: point `-c`
+at the `.odcs.yaml` file. Each ODCS rule is either enforced with the same meaning or refused
+by name — never skipped quietly. [`docs/ODCS.md`](docs/ODCS.md) has the mapping and the
+`--allow-unenforced` escape hatch. The native format:
+
 ```yaml
 covenant: 1
 id: orders
@@ -233,24 +243,366 @@ See ARCHITECTURE.md's null-semantics table.
 
 ## Embedding (Arrow-native pipelines)
 
-```rust
-use covenant::{compile::CompiledContract, spec::Contract};
-use covenant::engine::{arrow::validate_batch, UniqueTracker};
-use covenant::report::Collector;
+The Arrow engine and the CSV and Parquet readers are the `arrow` feature, which is on by default.
+An embedder that only judges JSON records, such as a stream processor's plugin or a
+WebAssembly module, can depend on the crate with `default-features = false` and link no Arrow
+at all. In such a build `covenant check` refuses CSV and Parquet with a message that names the
+feature.
 
-let contract = CompiledContract::compile(&Contract::from_path(std::path::Path::new("orders.yaml"))?)?;
+
+```rust
+use covenant::prelude::*;
+
+let contract = CompiledContract::compile(&Contract::from_path("orders.yaml".as_ref())?)?;
 let model = contract.resolve_model(None)?;
 let mut collector = Collector::new(contract.policy.sample_violations);
-let mut unique = UniqueTracker::new(model);
+let mut unique = UniqueTracker::new(model);  // uniqueness spans the source
+let mut schema = SchemaFindings::new();      // a schema problem counts once per source
 let mut rows = 0;
-for batch in reader {                       // any RecordBatch source
-    rows += validate_batch(model, &batch?, rows, Some(&mut unique), &mut collector);
+for batch in reader {                        // any RecordBatch source
+    rows += validate_source_batch(model, &batch?, rows, Some(&mut unique), &mut schema, &mut collector);
 }
 ```
 
 The contract compiles once (regexes built, allowed-sets hashed); per-batch
 validation is a columnar pass with per-(field, rule) sample caps so a
-million-row disaster still produces a bounded, readable report.
+million-row disaster still produces a bounded, readable report. A schema
+problem — a required column missing, a column of the wrong type — is a fact
+about the source, so it counts once however the source is batched; for a
+single batch, `validate_batch(model, &batch, 0, Some(&mut unique), &mut collector)`
+checks it as a whole source.
+
+`covenant::prelude` is the stable surface: what it exports is covered by the change policy in
+[`docs/API.md`](docs/API.md), and a test pins every signature in it. The package is
+`covenant-data`; the library it provides is `covenant`.
+
+## Python (`covenant_data`)
+
+The same engine as a Python module, for pipelines that hold their data in frames:
+
+```python
+import covenant_data
+
+report = covenant_data.check(df, "orders.yaml")   # polars, pyarrow, DuckDB: zero-copy
+assert report.passed, report                     # the report names each rule, row and value
+```
+
+Anything that exports Arrow through the PyCapsule interface is checked batch by batch, without
+a copy. A list of dicts is checked exactly as `covenant check` checks an NDJSON file, and a path
+as a file. `covenant_data.Contract("orders.yaml")` compiles a contract once for many checks;
+`covenant_data.testing.assert_conforms(df, contract)` fails a test with the report as its
+message; and the wheel installs the `covenant` command as well. On a 4-core machine, a 10M-row
+polars frame with a pattern, bounds, an allowed set and a timestamp checks in about 0.9 s;
+`unique` over 10M distinct strings brings it to about 6.5 s, most of it holding every key.
+
+It builds from `python/` with maturin as one abi3 wheel for CPython 3.9 and later; it is not on
+PyPI yet.
+
+## WASM (`covenant.wasm`)
+
+The same command builds for WebAssembly, for sandboxes, edge runtimes and any host with a WASI
+runtime:
+
+```bash
+cargo build --release --target wasm32-wasip1          # target/wasm32-wasip1/release/covenant.wasm
+wasmtime --dir . target/wasm32-wasip1/release/covenant.wasm check orders.ndjson -c orders.yaml
+```
+
+Every command works as the native one does, reading and writing files in the directories the
+runtime grants it. CI holds it to the native build byte for byte — the example data, a CSV, the
+stream gate, `diff`, `export`, the conformance vectors and a profile file — running it under
+Node's built-in WASI (`.github/scripts/wasm-run.mjs`, which also runs it without a WASI
+runtime installed).
+
+From JavaScript, `js/covenant.mjs` runs the same build over an in-memory filesystem, in a
+browser or in Node, with no dependencies: `await covenant.check({ contract, data })` hands back
+the JSON report, and nothing touches a disk or leaves the page. `js/playground.html` is a page
+on it: paste a contract and some CSV or NDJSON, and get the command's report. CI holds the JS
+API to the native build the same way (`js/golden.mjs`); [`js/README.md`](js/README.md) has the
+API and how to serve the playground.
+
+## Inside a stream processor (`gate --subprocess`)
+
+A stream processor that runs a command for its messages can run the gate itself.
+`covenant gate --subprocess` answers every line with one line, flushed at once: the record on
+stdout if it goes on, its dead-letter envelope on stderr if it is withheld, a blank line for a
+blank one. That is the protocol of Redpanda Connect's `subprocess` processor, which replaces
+the message with a stdout reply and marks it failed on a stderr reply, so the gate's verdict
+routes the message:
+
+```yaml
+input:
+  kafka_franz:
+    seed_brokers: [localhost:9092]
+    topics: [orders_raw]
+    consumer_group: covenant
+
+pipeline:
+  threads: 1                    # one ordered stream into the gate; see below
+  processors:
+    - subprocess:
+        name: covenant
+        args: [gate, --subprocess, --contract, orders.yaml]
+
+output:
+  switch:
+    cases:
+      - check: errored()        # withheld: error() is the dead-letter envelope
+        output:
+          kafka_franz:
+            seed_brokers: [localhost:9092]
+            topic: orders_dlq
+      - output:
+          kafka_franz:
+            seed_brokers: [localhost:9092]
+            topic: orders_validated
+```
+
+One gate process serves the pipeline, so `unique` spans the stream. With several pipeline
+threads, records reach it in the order the threads deliver them, which decides which of two
+duplicates counts as the first; `threads: 1` keeps the input's order. Under
+`on_violation: warn` a record's only reply is the record itself, and its dead letter goes to
+`--dlq` when one is given. The gate is not restarted per message: it keeps its state for as
+long as the processor keeps it running.
+
+## Topic to topic (`gate --brokers`, the `kafka` feature)
+
+Built with the `kafka` feature, the gate reads and writes Kafka topics itself. The feature
+compiles librdkafka from source, so it needs a C compiler, `make` and `perl`, and it is off by
+default:
+
+```bash
+cargo install covenant-data --features kafka
+
+covenant gate -c orders.yaml --brokers localhost:9092 \
+  --from orders_raw --to orders_validated --dlq-topic orders_dlq
+```
+
+A record that goes on is produced to `--to` as it arrived: key, value, headers and timestamp,
+in the partition a Java producer would have put its key in. A dead letter keeps the record's
+key and headers and adds three of its own, `covenant.source.topic`, `covenant.source.partition`
+and `covenant.source.offset`; without `--dlq-topic`, dead letters go to `--dlq` or stderr as
+usual. A tombstone (a record with no value) goes on unjudged: a delete is not a record the
+contract describes.
+
+Delivery is at-least-once. The gate commits under its consumer group (`--group`, by default
+`covenant-gate.<contract id>.<topic>`) only offsets whose records the brokers have acknowledged:
+every second (`--commit-interval-ms`), before a rebalance takes partitions away, and when
+SIGINT or SIGTERM stops it. A second signal stops it at once. If the brokers refuse a record,
+for example a dead letter larger than the DLQ topic accepts, the gate stops with exit 2 and
+commits nothing from that point on. After a restart, those records are judged again. A new
+group starts from the earliest offset. The gate never creates topics, so all three must exist.
+
+Connection settings are librdkafka properties, given as `-X key=value` or in a `--kafka-config`
+file, which keeps credentials off the command line. TLS and SASL (PLAIN, SCRAM, OAUTHBEARER) are
+built in, and so are gzip, snappy, lz4 and zstd. `--exit-at-end` stops the gate once every
+assigned partition is read to its end, for a backfill or a test, with the usual exit code.
+`unique` covers what one gate process reads. Run one gate per group to hold it across the whole
+topic; with several gates in a group, each one checks only its own partitions.
+
+## Inside the broker (a Redpanda Data Transform)
+
+[`integrations/redpanda-transform`](integrations/redpanda-transform/README.md) builds the gate as
+a Redpanda Data Transform: WebAssembly that the broker runs on every record written to a topic.
+The contract is compiled in at build time, and a contract the transform could not enforce
+exactly fails the build. Each record is judged by the same `RecordGate`. A record that keeps
+the contract goes to the first output topic unchanged; a record that breaks it becomes a dead
+letter, with its key and headers, on the topic named by `COVENANT_DLQ_TOPIC`; a tombstone goes
+on unjudged:
+
+```bash
+COVENANT_CONTRACT=orders.yaml COVENANT_NO_UNIQUE=1 rpk transform build
+rpk transform deploy --input-topic orders_raw --output-topic orders_validated \
+  --output-topic orders_dlq --var COVENANT_DLQ_TOPIC=orders_dlq
+```
+
+A transform keeps its state per partition, so it cannot hold `unique` across a topic. The build
+refuses a model that declares `unique` fields until `COVENANT_NO_UNIQUE=1` says to skip them. CI
+deploys the module into Redpanda and requires the same records and dead letters as
+`covenant gate --no-unique` on the same input.
+
+## On the JVM (Kafka Connect)
+
+[`integrations/jvm`](integrations/jvm/README.md) has two parts: the gate as a Java library, and
+a Kafka Connect transformation built on it. Neither ships native code. The engine's own
+WebAssembly build runs on Chicory, a WebAssembly runtime written in Java, so a record gets the
+same verdict and the same dead letter as in `covenant gate`:
+
+```java
+try (Gate gate = Gate.open(Path.of("orders.yaml"), null, UniqueKeys.SKIP)) {
+  if (gate.judge(recordJson) != Verdict.PASS) deadLetters.send(gate.deadLetter());
+}
+```
+
+To use the transformation, put its jar on a worker's `plugin.path` and set
+`transforms.covenant.type=net.mancube.covenant.connect.CovenantGate` and
+`transforms.covenant.contract=/etc/covenant/orders.yaml`. A blocked record then fails with its
+dead letter as the error message. With `errors.tolerance=all`, a sink connector's dead letter
+queue receives the record, and the dead letter arrives in its `__connect.errors.exception.message`
+header. CI runs a real Connect worker and requires its sink and its dead letter queue to match
+`covenant gate` on the same records.
+
+The same library runs in a Kafka proxy. A Kroxylicious filter judges every record of a
+produce request before it reaches a broker, so a batch that breaks the contract is refused to
+its producer with the record's dead letter as the error. Nothing needs to change in the
+producers, whatever language they are written in.
+
+## In Arroyo SQL
+
+[`integrations/arroyo`](integrations/arroyo/README.md) has two Rust UDFs for Arroyo that link the
+engine itself. `covenant_verdict(value)` returns `'pass'`, `'block'` or `'warn'`, and
+`covenant_dead_letter(value)` returns the dead letter `covenant gate` writes, or `NULL`. A
+streaming SQL pipeline can route with them:
+
+```sql
+INSERT INTO orders_validated SELECT value FROM orders_raw WHERE covenant_verdict(value) <> 'block';
+INSERT INTO orders_dlq SELECT covenant_dead_letter(value) AS value FROM orders_raw
+  WHERE covenant_dead_letter(value) IS NOT NULL;
+```
+
+`render.py` compiles a contract into the UDF sources, after checking it with the engine. CI
+registers them in a real Arroyo, which compiles them itself. It then runs this pipeline and
+requires the same records and dead letters as `covenant gate`.
+
+## Profiles and drift: monitoring from the check you already run
+
+A check can also leave a **profile** of what it read — presence, nulls, distinct values,
+ranges and distributions per field, in the same read — and `covenant drift` compares two of
+them. It catches what a contract does not forbid and a consumer still notices:
+
+```bash
+covenant check exports/orders.parquet -c orders.yaml --profile today.json
+covenant profile merge history/*.json -o baseline.json   # runs, partitions, days
+covenant drift baseline.json today.json                  # exit 1 on drift
+```
+
+```text
+DRIFT orders/orders — baseline v1.2.0, 3 runs, 12,000 rows · current v1.2.0, 1 run, 1,500 rows
+  (model)         rows per run fell from 4,000 to 1,500 (−62.5%; threshold ±50%)
+  amount_cents    values shifted: median 4,016 → 9,024, p95 5,984 → 11,072 (PSI 7.94 over the baseline's deciles; threshold 0.25)
+  currency        "EUR" rose from 30% to 67.1% of values (Jensen–Shannon distance 0.32; threshold 0.1)
+  customer_email  null rate rose from 1.9% to 21% (threshold ±5 points)
+  4 findings over 6 fields
+```
+
+A profile never keeps the text of a string field: it contributes lengths and distinct counts,
+and an `allowed:` field a count per value its contract lists, with anything else counted
+together.
+The same records in NDJSON, CSV or Parquet give the same profile, and merged profiles are
+exactly the profile of all their data. [`docs/PROFILES.md`](docs/PROFILES.md) has the format,
+the metrics, their accuracy and the cost.
+
+## A report for CI, catalogs and services (`--report-json`, `--report-to`, `--openlineage`)
+
+`check --report-json <path>` also writes the run's verdict as a document other tools can keep:
+`covenant-report/v1`. It holds the verdict, the exact counts per field and rule, and where and
+when the run happened. In GitHub Actions or GitLab CI it names the repository, commit, ref and
+run. The terminal output and the exit code are unchanged.
+
+```bash
+covenant check orders.ndjson -c orders.yaml --report-json covenant-report.json
+```
+
+`gate` and `diff` write the same document, and so does the Python face
+(`report.write_report(path)`), so every plane reports one way:
+
+- **`gate --report-json <path>`** writes it when the stream ends: the stream's counts per field
+  and rule, what became of the records (`passed`, `blocked`, `warned`), and samples whose rows
+  are the dead letters' rows. The directory is checked before the first record is read. Over
+  Kafka (`--brokers`) it is written when the run ends, names the topic, and counts the
+  tombstones that went on unjudged.
+- **`diff --report-json <path>`** writes the classified changes, the `--fail-on` verdict and,
+  with `--consumers`, who each change breaks.
+
+```json
+{
+  "report": 1,
+  "kind": "check",
+  "verdict": "fail",
+  "engine": { "name": "covenant", "version": "0.1.0" },
+  "run": {
+    "plane": "ci",
+    "started_at": "2026-09-27T17:48:41.822Z",
+    "duration_ms": 41,
+    "ci": { "provider": "github-actions", "repository": "acme/shop", "sha": "0123abcd",
+            "ref": "refs/pull/7/merge", "run_url": "https://github.com/acme/shop/actions/runs/42" }
+  },
+  "budget": 0,
+  "violations": 1,
+  "sample_mode": "masked",
+  "checks": [{
+    "contract_id": "orders", "contract_version": "1.2.0", "model": "orders",
+    "source": "orders.ndjson", "rows": 1500, "violations": 1,
+    "per_rule": [{ "field": "currency", "rule": "allowed", "count": 1 }],
+    "samples": [{ "field": "currency", "rule": "allowed", "row": 311, "type": "string", "length": 3 }]
+  }]
+}
+```
+
+The document is made to leave the machine, so its samples say where each violation was and
+never what the value was. `--report-samples masked`, the default, keeps each sample's field,
+rule and row and the value's type and length; `hashed` adds a hash of the value keyed with
+`COVENANT_SAMPLE_KEY`, so two runs can say "the same bad value" without either saying what it
+was; `none` keeps the counts only. The values stay in the terminal output and, for the gate, in
+the dead letters.
+
+It can leave the machine as the run ends, or later:
+
+```bash
+export COVENANT_TOKEN=…   # sent as Authorization: Bearer; never on the command line
+covenant check orders.ndjson -c orders.yaml --report-to https://ingest.example.com/v1/runs
+covenant push covenant-report.json --to https://ingest.example.com/v1/runs
+covenant check orders.ndjson -c orders.yaml --openlineage http://localhost:5000/api/v1/lineage
+```
+
+`--report-to` (on `check`, `gate` and `diff`) POSTs the document; `push` sends documents already
+written. `--openlineage` (on `check` and the Kafka gate) sends the run as OpenLineage START and
+COMPLETE events whose input dataset carries each rule's result as a `dataQualityAssertions`
+facet, so a lineage service such as Marquez shows the verdict next to the dataset (CI holds it
+to a running Marquez: the dataset shows its passing and failing rules). A URL is
+`https`, or plain `http` to this machine only, and is checked before the run starts; a run whose
+document or events cannot be sent warns once and keeps its exit code. Nothing is sent unless
+one of these is asked for.
+
+[`schema/covenant-report.v1.json`](schema/covenant-report.v1.json) is the JSON Schema, and
+[`docs/REPORT.md`](docs/REPORT.md) describes every field, the samples, sending and the
+OpenLineage events.
+
+## Enforcing in Postgres (`covenant export postgres`)
+
+When the data lands in a Postgres table, the table can enforce the contract itself:
+
+```bash
+covenant export postgres -c orders.yaml --table sales.orders -o orders.sql
+```
+
+The output is a `CREATE TABLE` whose column types, `NOT NULL`, `CHECK` and `UNIQUE` constraints
+reject the rows `covenant check` reports, each constraint named after its rule
+(`amount_cents.min`). A rule with no exact Postgres equivalent refuses the export rather than
+being approximated. CI holds the claim against a real Postgres, on the conformance vectors and
+on edge values; [`docs/POSTGRES.md`](docs/POSTGRES.md) has the mapping and what "exact" covers.
+
+## For AI agents (`covenant mcp`)
+
+`covenant mcp` serves the checker as Model Context Protocol tools over stdio, so the agents
+writing pipelines call it directly: `explain` (what a contract requires, field by field),
+`check` (files, or a few inline records), `validate`, `diff` and `drift`. Register it with
+your client as the command `covenant` with the argument `mcp`. A failing verdict is a
+successful call; a contract that cannot be read is a tool error the agent sees.
+
+## ODCS conformance vectors
+
+`conformance/odcs/` pins what the Open Data Contract Standard's rules mean as small,
+engine-neutral cases — a contract, a few records, the verdict the standard implies — so any
+engine can be held to the same reading:
+
+```bash
+covenant conformance conformance/odcs      # exit 1 if a supported vector disagrees
+```
+
+Where the standard's text allows two readings, the case is left out of the suite and listed as
+a question for the standard instead. [`docs/CONFORMANCE.md`](docs/CONFORMANCE.md) has the
+format and the questions.
 
 ## The console (`covenant serve`)
 
@@ -290,17 +642,26 @@ without a reachable server the app runs on demo data and says so.
 | Code | Meaning |
 |------|---------|
 | 0 | clean — data conforms / diff acceptable |
-| 1 | the *subject* violates: data breaks the contract, the diff is breaking, or (`validate`) the contract has error-level lint findings |
-| 2 | the *run* failed (bad flags, unreadable/unparseable file; for `check`/`gate`/`diff`, a contract too broken to enforce) |
+| 1 | the *subject* violates: data breaks the contract, the diff is breaking, (`validate`) the contract has error-level lint findings, or (`drift`) the data drifted past a threshold |
+| 2 | the *run* failed (bad flags, unreadable/unparseable file; for `check`/`gate`/`diff`, a contract too broken to enforce; for `export`, a rule the engine has no exact equivalent for) |
 
 ## Repo layout
 
 ```text
 src/spec.rs        contract document + linting        src/diff.rs      breaking-change classifier
-src/compile.rs     spec → hot-path validators         src/consumers.rs consumer manifests + blast radius
-src/engine/row.rs  JSON-record engine (NDJSON/gate)   src/gate.rs      stream interceptor
-src/engine/arrow.rs columnar engine (CSV/Parquet/lib) src/cli.rs       the `covenant` CLI
-src/sources.rs     file readers driving the engines   src/report.rs    violations + reports
+src/odcs.rs        ODCS v3 reader, exact or refused   src/consumers.rs consumer manifests + blast radius
+src/compile.rs     spec → hot-path validators         src/gate.rs      stream interceptor
+src/engine/row.rs  JSON-record engine (NDJSON/gate)   src/profile.rs   per-field profiles
+src/engine/arrow.rs columnar engine (CSV/Parquet/lib) src/sketch.rs    distinct + quantile sketches
+src/sources.rs     file readers driving the engines   src/drift.rs     profile-to-profile drift
+src/report.rs      violations + reports               src/mcp.rs       MCP tools over stdio
+src/protocol.rs    the report document (report: 1)    schema/          its JSON Schema
+src/send.rs        sending documents (HTTPS)          src/lineage.rs   OpenLineage run events
+src/postgres.rs    contract → Postgres constraints    src/prelude.rs   the stable engine API
+python/            the Python module (PyO3, maturin)  js/              the JS API over covenant.wasm
+integrations/      the gate inside stream processors: Redpanda, the JVM (Kafka Connect, Kroxylicious), Arroyo
+src/cli.rs         the `covenant` CLI                 src/kafka.rs     the gate over Kafka topics
+src/conformance.rs ODCS vector runner                 conformance/odcs ODCS conformance vectors
 ```
 
 See `ARCHITECTURE.md` for the engine design and the columnar null-semantics
@@ -322,8 +683,9 @@ you adopt it:
   which is correct for files and bounded batches but grows without limit in a
   long-running `gate`. Keep `unique` on bounded inputs until windowed dedup
   lands.
-- **No native Kafka client.** The gate is a pipe; use `kcat` or any other
-  transport that can pipe.
+- **Kafka only, among native transports.** Beyond stdin and stdout, the gate
+  speaks Kafka itself (the `kafka` feature, above), at-least-once. For any
+  other broker, pipe it or run it as a stream processor's subprocess.
 - **No catalog, no lineage, no discovery UI, and no freshness or SLA
   monitoring.** Covenant enforces contracts at a boundary; it does not
   describe your estate or watch it over time.

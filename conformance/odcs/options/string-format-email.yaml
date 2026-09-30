@@ -1,0 +1,23 @@
+vector: 1
+id: options/string-format-email
+standard: ODCS v3.1.0
+cites: "schema.md: logicalTypeOptions.format (string)"
+description: "format: email accepts an address and rejects a string with no @."
+contract: |
+  apiVersion: v3.1.0
+  kind: DataContract
+  id: vector
+  version: 1.0.0
+  schema:
+    - name: t
+      properties:
+        - name: v
+          logicalType: string
+          logicalTypeOptions:
+            format: email
+records:
+  - { v: "ada@example.com" }
+  - { v: "not-an-email" }
+expect:
+  verdict: fail
+  failing: [1]

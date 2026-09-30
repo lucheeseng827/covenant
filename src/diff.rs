@@ -82,6 +82,11 @@ pub struct DiffReport {
     /// stay distinguishable. See [`crate::consumers`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub consumer_impact: Option<crate::consumers::ConsumerImpactReport>,
+    /// Rules on either side that were not compared because the run allowed
+    /// unenforced rules (`--allow-unenforced`). A change to one of them is
+    /// invisible here, so non-empty means this is a partial diff.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub unenforced: Vec<crate::spec::UnenforcedRule>,
 }
 
 impl DiffReport {
@@ -96,11 +101,16 @@ impl DiffReport {
         let mut s = String::new();
         let _ = writeln!(
             s,
-            "contract diff: v{} -> v{} ({} change{})",
+            "contract diff: v{} -> v{} ({} change{}){}",
             self.old_version,
             self.new_version,
             self.changes.len(),
-            if self.changes.len() == 1 { "" } else { "s" }
+            if self.changes.len() == 1 { "" } else { "s" },
+            if self.unenforced.is_empty() {
+                ""
+            } else {
+                " (partial)"
+            }
         );
         for c in &self.changes {
             let _ = writeln!(
@@ -114,6 +124,18 @@ impl DiffReport {
         }
         if self.changes.is_empty() {
             let _ = writeln!(s, "  no changes");
+        }
+        if !self.unenforced.is_empty() {
+            let _ = writeln!(
+                s,
+                "  not compared (--allow-unenforced): {} contract rule(s)\n{}",
+                self.unenforced.len(),
+                crate::spec::render_unenforced(&self.unenforced)
+                    .lines()
+                    .map(|l| format!("  {l}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            );
         }
         if let Some(ci) = &self.consumer_impact {
             let _ = writeln!(
@@ -200,6 +222,7 @@ pub fn diff(old: &Contract, new: &Contract) -> DiffReport {
         new_version: new.version.clone(),
         changes,
         consumer_impact: None,
+        unenforced: Vec::new(),
     }
 }
 

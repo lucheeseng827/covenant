@@ -1,5 +1,8 @@
 //! End-to-end CLI tests against the real binary: exit codes are the product
 //! contract CI scripts key off, so they are pinned here.
+// Arrow fixtures (Parquet files, RecordBatches) throughout: this suite runs
+// in every build with the `arrow` feature, which is on by default.
+#![cfg(feature = "arrow")]
 
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -201,6 +204,109 @@ fn check_csv_and_parquet() {
     );
 }
 
+/// `gate --subprocess` talks one line at a time: each line in is answered,
+/// flushed, before the next is sent — the record on stdout if it goes on, its
+/// dead-letter envelope on stderr if it is withheld, a blank line for a blank
+/// one. A reply that never comes fails the test instead of hanging it.
+#[test]
+fn gate_subprocess_answers_every_line_as_it_arrives() {
+    use std::io::{BufRead, BufReader};
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let dir = tempfile::tempdir().unwrap();
+    let block = write(&dir, "c.yaml", CONTRACT);
+    let warn = write(
+        &dir,
+        "warn.yaml",
+        &CONTRACT.replace(
+            "owner: data@acme.io",
+            "owner: data@acme.io\npolicy:\n  on_violation: warn",
+        ),
+    );
+    let good = r#"{"order_id":"ord_ab12","amount":10}"#;
+    let bad = r#"{"order_id":"nope","amount":10}"#;
+
+    // Spawn the gate; stdout and stderr lines arrive on one channel, tagged.
+    let converse = |contract: &std::path::Path, dlq: &std::path::Path| {
+        let mut child = Command::new(BIN)
+            .args(["gate", "--subprocess", "--contract"])
+            .arg(contract)
+            .arg("--dlq")
+            .arg(dlq)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let (tx, rx) = mpsc::channel::<(&'static str, String)>();
+        for (name, stream) in [
+            (
+                "stdout",
+                Box::new(child.stdout.take().unwrap()) as Box<dyn std::io::Read + Send>,
+            ),
+            ("stderr", Box::new(child.stderr.take().unwrap())),
+        ] {
+            let tx = tx.clone();
+            std::thread::spawn(move || {
+                for line in BufReader::new(stream).lines() {
+                    let _ = tx.send((name, line.unwrap()));
+                }
+            });
+        }
+        (child, rx)
+    };
+    let ask = |child: &mut std::process::Child,
+               rx: &mpsc::Receiver<(&'static str, String)>,
+               line: &str| {
+        let stdin = child.stdin.as_mut().unwrap();
+        writeln!(stdin, "{line}").unwrap();
+        stdin.flush().unwrap();
+        rx.recv_timeout(Duration::from_secs(20))
+            .unwrap_or_else(|_| panic!("no reply to {line:?}"))
+    };
+
+    let dlq = dir.path().join("blocked.dlq.ndjson");
+    let (mut child, rx) = converse(&block, &dlq);
+    assert_eq!(ask(&mut child, &rx, good), ("stdout", good.to_string()));
+    let (stream, envelope) = ask(&mut child, &rx, bad);
+    assert_eq!(stream, "stderr");
+    let envelope: serde_json::Value = serde_json::from_str(&envelope).unwrap();
+    assert_eq!(envelope["violations"][0]["rule"], "pattern");
+    assert_eq!(envelope["row"], 1);
+    assert_eq!(ask(&mut child, &rx, ""), ("stdout", String::new()));
+    // Uniqueness spans the conversation, not one line.
+    let (stream, envelope) = ask(&mut child, &rx, good);
+    assert_eq!(stream, "stderr");
+    assert!(envelope.contains(r#""rule":"unique""#), "{envelope}");
+    drop(child.stdin.take());
+    assert_eq!(child.wait().unwrap().code(), Some(1));
+    assert!(
+        rx.recv_timeout(Duration::from_millis(500)).is_err(),
+        "no summary after the stream"
+    );
+    assert_eq!(std::fs::read_to_string(&dlq).unwrap().lines().count(), 2);
+
+    // Under `on_violation: warn` the record goes on: its only answer is on
+    // stdout, and its dead letter goes to the DLQ file alone.
+    let dlq = dir.path().join("warned.dlq.ndjson");
+    let (mut child, rx) = converse(&warn, &dlq);
+    assert_eq!(ask(&mut child, &rx, bad), ("stdout", bad.to_string()));
+    assert_eq!(ask(&mut child, &rx, good), ("stdout", good.to_string()));
+    drop(child.stdin.take());
+    assert_eq!(child.wait().unwrap().code(), Some(0));
+    assert!(rx.recv_timeout(Duration::from_millis(500)).is_err());
+    assert_eq!(std::fs::read_to_string(&dlq).unwrap().lines().count(), 1);
+
+    // The stats sidecar is for the batch gate.
+    let out = Command::new(BIN)
+        .args(["gate", "--subprocess", "--stats", "s.json", "--contract"])
+        .arg(&block)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+}
+
 #[test]
 fn gate_blocks_dirty_records() {
     let dir = tempfile::tempdir().unwrap();
@@ -391,6 +497,137 @@ models:
         "{}",
         String::from_utf8_lossy(&out.stdout)
     );
+}
+
+/// A file the reader hands over in several batches reports what the same rows
+/// report as one batch. A schema problem is a fact about the file, so it
+/// counts once, not once per batch, and the verdict under a budget cannot
+/// depend on how big the file is.
+#[test]
+fn a_file_read_in_several_batches_counts_a_schema_problem_once() {
+    use std::collections::HashMap;
+
+    use covenant::compile::CompiledContract;
+    use covenant::engine::{arrow::validate_batch, UniqueTracker};
+    use covenant::report::{Collector, ReportHeader};
+    use covenant::spec::Contract;
+    use parquet::file::properties::WriterProperties;
+
+    // More rows than one reader batch (8192), in four row groups.
+    const ROWS: usize = 20_000;
+    let id = |i: usize| {
+        const DIGITS: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyz";
+        let (mut n, mut s) = (i, [b'0'; 4]);
+        for c in s.iter_mut().rev() {
+            *c = DIGITS[n % 36];
+            n /= 36;
+        }
+        format!("ord_{}", std::str::from_utf8(&s).unwrap())
+    };
+    // No `amount` (required) and an undeclared `note` (the model is strict);
+    // a bad id in every row group, and the last row repeats the second.
+    let ids: Vec<String> = (0..ROWS)
+        .map(|i| match i {
+            _ if i % 5000 == 7 => format!("BAD{i}"),
+            _ if i == ROWS - 1 => id(1),
+            _ => id(i),
+        })
+        .collect();
+    let batch = RecordBatch::try_from_iter(vec![
+        (
+            "order_id".to_string(),
+            Arc::new(StringArray::from(ids.clone())) as ArrayRef,
+        ),
+        (
+            "note".to_string(),
+            Arc::new(StringArray::from(vec!["n"; ROWS])) as ArrayRef,
+        ),
+    ])
+    .unwrap();
+
+    let dir = tempfile::tempdir().unwrap();
+    let contract = write(&dir, "c.yaml", CONTRACT);
+    let parquet_path = dir.path().join("many.parquet");
+    let props = WriterProperties::builder()
+        .set_max_row_group_row_count(Some(5000))
+        .build();
+    let file = std::fs::File::create(&parquet_path).unwrap();
+    let mut writer =
+        parquet::arrow::ArrowWriter::try_new(file, batch.schema(), Some(props)).unwrap();
+    writer.write(&batch).unwrap();
+    let meta = writer.close().unwrap();
+    assert_eq!(meta.num_row_groups(), 4);
+    let csv: String = std::iter::once("order_id,note\n".to_string())
+        .chain(ids.iter().map(|i| format!("{i},n\n")))
+        .collect();
+    let csv_path = write(&dir, "many.csv", &csv);
+
+    // The same rows as one batch, through the library.
+    let compiled =
+        CompiledContract::compile(&Contract::parse(CONTRACT, "c.yaml").unwrap()).unwrap();
+    let model = compiled.resolve_model(None).unwrap();
+    let mut collector = Collector::new(10);
+    let mut unique = UniqueTracker::new(model);
+    validate_batch(model, &batch, 0, Some(&mut unique), &mut collector);
+    let one_batch = collector.into_report(
+        ReportHeader {
+            contract_id: "orders".into(),
+            contract_version: "1.0.0".into(),
+            owner: None,
+            model: "orders".into(),
+            source: "<one batch>".into(),
+        },
+        ROWS as u64,
+    );
+    let expected: HashMap<(String, String), u64> = one_batch
+        .per_rule
+        .iter()
+        .map(|r| ((r.field.clone(), r.rule.to_string()), r.count))
+        .collect();
+    let at = |f: &str, r: &str| expected[&(f.to_string(), r.to_string())];
+    assert_eq!(
+        (
+            at("amount", "schema_missing_field"),
+            at("note", "unexpected_field"),
+            at("order_id", "pattern"),
+            at("order_id", "unique"),
+        ),
+        (1, 1, 4, 1)
+    );
+
+    for path in [&parquet_path, &csv_path] {
+        let out = Command::new(BIN)
+            .args(["check", "--format", "json", "--contract"])
+            .arg(&contract)
+            .arg(path)
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(1), "{}", path.display());
+        let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        let report = &report[0];
+        let counts: HashMap<(String, String), u64> = report["per_rule"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| {
+                (
+                    (
+                        r["field"].as_str().unwrap().to_string(),
+                        r["rule"].as_str().unwrap().to_string(),
+                    ),
+                    r["count"].as_u64().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(counts, expected, "{}", path.display());
+        assert_eq!(
+            report["violations"],
+            one_batch.violations,
+            "{}",
+            path.display()
+        );
+        assert_eq!(report["rows"], ROWS as u64, "{}", path.display());
+    }
 }
 
 /// A header-only CSV missing a required column is not "clean" — the schema

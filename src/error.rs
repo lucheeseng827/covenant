@@ -4,6 +4,8 @@ use thiserror::Error;
 /// contract *violations*, which are data findings reported through
 /// [`crate::report`] (exit code 1 territory).
 #[derive(Debug, Error)]
+// New failure kinds arrive in minor releases.
+#[non_exhaustive]
 pub enum CovenantError {
     // Verb-neutral on purpose: this variant wraps reads AND writes (DLQ,
     // init, gate output) — "failed to read" would send a user with a
@@ -23,6 +25,20 @@ pub enum CovenantError {
     /// would report nonsense).
     #[error("contract {id} is invalid: {details}")]
     ContractInvalid { id: String, details: String },
+
+    /// The contract carries rules this runtime cannot enforce yet (ODCS
+    /// features it does not implement). Refused rather than half-enforced:
+    /// a PASS against a contract whose rules were quietly skipped would
+    /// certify data nobody checked.
+    #[error(
+        "{path}: {count} contract rule(s) cannot be enforced yet:\n{details}\n  \
+         Rerun with --allow-unenforced to check everything else; the report is then marked partial."
+    )]
+    ContractUnenforced {
+        path: String,
+        count: usize,
+        details: String,
+    },
 
     #[error("model {model:?} not found in contract {contract_id:?} (available: {available})")]
     ModelNotFound {
@@ -54,6 +70,33 @@ pub enum CovenantError {
 
     #[error("{path}: {message}")]
     DataRead { path: String, message: String },
+
+    /// A profile that cannot be read, or two that cannot be combined.
+    #[error("profile error in {path}: {message}")]
+    ProfileInvalid { path: String, message: String },
+
+    /// Contract rules with no exact equivalent in an engine's own dialect
+    /// (`covenant export`), refused rather than exported approximately.
+    #[error(
+        "{count} contract rule(s) have no exact {dialect} equivalent yet:\n{details}\n  \
+         Rerun with --allow-unenforced to export everything else; the output then lists what it leaves out."
+    )]
+    DialectUnenforced {
+        dialect: String,
+        count: usize,
+        details: String,
+    },
+
+    /// A contract the dialect cannot express at all, such as a name the
+    /// engine would silently truncate.
+    #[error("cannot export to {dialect}: {message}")]
+    Dialect { dialect: String, message: String },
+
+    /// A gate's transport failed in a way no retry mends: brokers that do
+    /// not answer, a topic that does not exist, a record the brokers did not
+    /// acknowledge. Nothing after the failure is committed.
+    #[error("{transport}: {message}")]
+    Transport { transport: String, message: String },
 }
 
 pub type Result<T> = std::result::Result<T, CovenantError>;

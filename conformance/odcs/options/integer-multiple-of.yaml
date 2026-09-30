@@ -1,0 +1,25 @@
+vector: 1
+id: options/integer-multiple-of
+standard: ODCS v3.1.0
+cites: "schema.md: logicalTypeOptions.multipleOf"
+description: "multipleOf: 5 accepts 0, 5 and -5, and rejects 7."
+contract: |
+  apiVersion: v3.1.0
+  kind: DataContract
+  id: vector
+  version: 1.0.0
+  schema:
+    - name: t
+      properties:
+        - name: v
+          logicalType: integer
+          logicalTypeOptions:
+            multipleOf: 5
+records:
+  - { v: 0 }
+  - { v: 5 }
+  - { v: -5 }
+  - { v: 7 }
+expect:
+  verdict: fail
+  failing: [3]

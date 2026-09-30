@@ -1,0 +1,25 @@
+vector: 1
+id: options/string-max-length
+standard: ODCS v3.1.0
+cites: "schema.md: logicalTypeOptions.maxLength"
+description: "maxLength: 3 rejects longer strings."
+contract: |
+  apiVersion: v3.1.0
+  kind: DataContract
+  id: vector
+  version: 1.0.0
+  schema:
+    - name: t
+      properties:
+        - name: v
+          logicalType: string
+          logicalTypeOptions:
+            maxLength: 3
+records:
+  - { v: "abc" }
+  - { v: "abcd" }
+  - { v: "" }
+  - { v: null }
+expect:
+  verdict: fail
+  failing: [1]

@@ -1,8 +1,9 @@
 //! The enforcement engines. One compiled contract, two data representations:
 //! [`row`] validates `serde_json` records (NDJSON checks, the stream gate),
 //! [`arrow`] validates `RecordBatch` columns (Parquet/CSV checks, embedding
-//! in Arrow-native pipelines).
+//! in Arrow-native pipelines; the `arrow` feature, on by default).
 
+#[cfg(feature = "arrow")]
 pub mod arrow;
 pub mod row;
 

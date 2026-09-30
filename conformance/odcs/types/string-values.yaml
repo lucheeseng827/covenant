@@ -1,0 +1,24 @@
+vector: 1
+id: types/string-values
+standard: ODCS v3.1.0
+cites: "schema.md: logicalType"
+description: "A string property holds strings; other JSON types are not strings. An empty string is a string."
+contract: |
+  apiVersion: v3.1.0
+  kind: DataContract
+  id: vector
+  version: 1.0.0
+  schema:
+    - name: t
+      properties:
+        - name: v
+          logicalType: string
+records:
+  - { v: "a" }
+  - { v: 5 }
+  - { v: true }
+  - { v: null }
+  - { v: "" }
+expect:
+  verdict: fail
+  failing: [1, 2]

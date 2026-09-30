@@ -13,8 +13,10 @@
 //! | `GET /`            | the console (embedded)                              |
 //! | `GET /v1/health`   | liveness + version + served contract id             |
 //! | `GET /v1/contract` | the loaded contract document + its lint findings    |
-//! | `POST /v1/validate`| body = contract YAML → lint findings                |
-//! | `POST /v1/check`   | body = NDJSON → a full CheckReport                  |
+//! |                    | and the rules it runs without (`unenforced`)        |
+//! | `POST /v1/validate`| body = contract YAML or ODCS → lint findings        |
+//! | `POST /v1/check`   | body = NDJSON → a full CheckReport; partial, with   |
+//! |                    | its `unenforced` list, under `--allow-unenforced`   |
 //! | `POST /v1/diff`    | body = {old, new, consumers?} → a classified        |
 //! |                    | DiffReport (+ blast radius when manifests are sent) |
 //! | `POST /v1/consumers/verify` | body = {manifests} → each manifest checked |
@@ -39,7 +41,7 @@ use crate::engine::UniqueTracker;
 use crate::error::{CovenantError, Result};
 use crate::report::{Collector, ReportHeader};
 use crate::sources::check_ndjson_reader;
-use crate::spec::Contract;
+use crate::spec::{Contract, LintLevel};
 
 /// The built console SPA (frontend/, Vite + React + TypeScript). `dist/` is
 /// committed so building with `--features serve` needs no Node toolchain;
@@ -57,6 +59,10 @@ pub struct AppState {
     pub doc: Contract,
     pub compiled: CompiledContract,
     pub model: String,
+    /// Rules of the served contract that are not enforced (`covenant serve
+    /// --allow-unenforced`). Every check report lists them, which marks it
+    /// partial; empty for a fully enforced contract.
+    pub unenforced: Vec<crate::spec::UnenforcedRule>,
     /// DLQ file to read for GET /v1/dlq (`covenant gate --dlq <path>`).
     pub dlq_path: Option<std::path::PathBuf>,
     /// Stats snapshot to read for GET /v1/gate/stats
@@ -167,15 +173,18 @@ async fn contract(State(state): State<Arc<AppState>>) -> Json<serde_json::Value>
         "model": state.model,
         "contract": state.doc,
         "findings": state.doc.lint(),
+        "unenforced": state.unenforced,
     }))
 }
 
-/// Lint any contract YAML: 200 with findings, 400 when it won't parse.
+/// Lint any contract YAML, `covenant: 1` or ODCS: 200 with findings, 400
+/// when it won't parse. An ODCS rule the runtime cannot enforce is an error
+/// finding, as `covenant validate` reports it without `--allow-unenforced`.
 async fn validate(body: String) -> impl IntoResponse {
-    match Contract::parse(&body, "<request>") {
-        Ok(doc) => {
-            let findings = doc.lint();
-            let enforceable = doc.is_enforceable();
+    match Contract::load(&body, "<request>") {
+        Ok(loaded) => {
+            let findings = loaded.lint(false);
+            let enforceable = findings.iter().all(|f| f.level != LintLevel::Error);
             (
                 StatusCode::OK,
                 Json(json!({ "findings": findings, "enforceable": enforceable })),
@@ -206,7 +215,7 @@ async fn check(State(state): State<Arc<AppState>>, body: String) -> impl IntoRes
     let mut unique = UniqueTracker::new(model);
     match check_ndjson_reader(model, body.as_bytes(), &mut unique, &mut collector) {
         Ok(rows) => {
-            let report = collector.into_report(
+            let mut report = collector.into_report(
                 ReportHeader {
                     contract_id: state.compiled.id.clone(),
                     contract_version: state.compiled.version.clone(),
@@ -216,6 +225,7 @@ async fn check(State(state): State<Arc<AppState>>, body: String) -> impl IntoRes
                 },
                 rows,
             );
+            report.unenforced = state.unenforced.clone();
             (
                 StatusCode::OK,
                 Json(serde_json::to_value(&report).expect("report serializes")),

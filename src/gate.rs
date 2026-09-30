@@ -1,8 +1,9 @@
 //! The stream gate: NDJSON in on stdin, clean records out on stdout,
 //! violations to a dead-letter sink. Transport-agnostic on purpose — pipe it
 //! between `kcat -C` and `kcat -P` and it is a Kafka SMT; put it in a
-//! CronJob reading a dump and it is a warehouse pre-load hook; a native
-//! Kafka consumer/producer wrapper is a roadmap feature, not a prerequisite.
+//! CronJob reading a dump and it is a warehouse pre-load hook; build the
+//! `kafka` feature and `crate::kafka` runs it over topics directly. Every
+//! transport judges records through [`RecordGate`].
 //!
 //! Contract policy drives behavior: `on_violation: block` withholds dirty
 //! records from stdout (they go to the DLQ with their violation list);
@@ -19,7 +20,7 @@ use serde::Serialize;
 use crate::compile::{CompiledContract, CompiledModel};
 use crate::engine::{row, UniqueTracker};
 use crate::error::{CovenantError, Result};
-use crate::report::Violation;
+use crate::report::{Collector, Violation};
 use crate::spec::OnViolation;
 
 /// A rejected record and why — one JSON object per line in the DLQ, carrying
@@ -128,7 +129,12 @@ impl StatsSink {
         }
     }
 
-    fn on_record(&mut self, blocked: bool, violations: &[Violation], validate_ns: Option<u64>) {
+    pub(crate) fn on_record(
+        &mut self,
+        blocked: bool,
+        violations: &[Violation],
+        validate_ns: Option<u64>,
+    ) {
         for v in violations {
             let field = v.field.clone().unwrap_or_default();
             *self.per_rule.entry((field, v.rule.name())).or_insert(0) += 1;
@@ -159,7 +165,7 @@ impl StatsSink {
         }
     }
 
-    fn maybe_write(&mut self, stats: &GateStats) {
+    pub(crate) fn maybe_write(&mut self, stats: &GateStats) {
         if !self.broken && self.last_write.elapsed() >= WRITE_EVERY {
             self.write(stats);
         }
@@ -183,7 +189,7 @@ impl StatsSink {
         None
     }
 
-    fn write(&mut self, stats: &GateStats) {
+    pub(crate) fn write(&mut self, stats: &GateStats) {
         // Every caller obeys the one-warning promise, including the final
         // end-of-run write — a persistently failing path must not warn twice.
         if self.broken {
@@ -231,6 +237,176 @@ impl StatsSink {
     }
 }
 
+/// What a gate decides about one record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verdict {
+    /// The record keeps the contract, and goes on.
+    Pass,
+    /// It breaks the contract under `on_violation: block`: it is withheld.
+    Block,
+    /// It breaks the contract under `on_violation: warn`: it goes on, and its
+    /// dead letter reports it.
+    Warn,
+}
+
+/// The gate's judgement, one record at a time. Every way a record reaches a
+/// gate — a line of a stream, a subprocess message, a Kafka message, a record
+/// in a broker's transform — gets its verdict and its dead letter from here,
+/// so they cannot drift apart. It keeps what spans the stream: uniqueness,
+/// row numbers, the counts and the violation budget.
+pub struct RecordGate<'c> {
+    contract: &'c CompiledContract,
+    model: &'c CompiledModel,
+    block: bool,
+    unique: Option<UniqueTracker>,
+    stats: GateStats,
+    total_violations: u64,
+    row: u64,
+    violations: Vec<Violation>,
+    record: serde_json::Value,
+}
+
+impl<'c> RecordGate<'c> {
+    /// A gate over one stream. `track_unique` keeps every `unique` key the
+    /// stream has shown, exactly, in memory.
+    pub fn new(
+        contract: &'c CompiledContract,
+        model: &'c CompiledModel,
+        track_unique: bool,
+    ) -> Self {
+        RecordGate {
+            contract,
+            model,
+            block: contract.policy.on_violation == OnViolation::Block,
+            unique: track_unique.then(|| UniqueTracker::new(model)),
+            stats: GateStats::default(),
+            total_violations: 0,
+            row: 0,
+            violations: Vec::new(),
+            record: serde_json::Value::Null,
+        }
+    }
+
+    /// Judge one record: the bytes of one JSON object, a trailing line end
+    /// allowed. A record that is not UTF-8, not JSON or not an object breaks
+    /// the contract too.
+    pub fn judge(&mut self, record: &[u8]) -> Verdict {
+        let row = self.next_row();
+        match std::str::from_utf8(record) {
+            Ok(text) => {
+                let text = text.trim_end_matches(['\n', '\r']);
+                match serde_json::from_str::<serde_json::Value>(text) {
+                    Ok(value) => {
+                        row::validate_record(
+                            self.model,
+                            &value,
+                            row,
+                            self.unique.as_mut(),
+                            &mut self.violations,
+                        );
+                        self.record = value;
+                    }
+                    Err(e) => {
+                        self.unreadable(text, format!("row {row}: invalid JSON: {e}"));
+                        self.record = serde_json::Value::String(text.to_string());
+                    }
+                }
+            }
+            Err(e) => {
+                let preview = String::from_utf8_lossy(record);
+                self.unreadable(
+                    &preview,
+                    format!("row {row}: record is not valid UTF-8 ({e})"),
+                );
+                self.record = serde_json::Value::String(crate::report::truncate(&preview, 256));
+            }
+        }
+        if self.violations.is_empty() {
+            self.stats.passed += 1;
+            return Verdict::Pass;
+        }
+        self.total_violations += self.violations.len() as u64;
+        if self.block {
+            self.stats.blocked += 1;
+            Verdict::Block
+        } else {
+            self.stats.warned += 1;
+            self.stats.passed += 1;
+            Verdict::Warn
+        }
+    }
+
+    /// A record too large to read, withheld whatever the policy, from a
+    /// preview of it.
+    pub(crate) fn oversized(&mut self, preview: &str) -> Verdict {
+        let row = self.next_row();
+        self.unreadable(
+            preview,
+            format!(
+                "row {row}: record exceeds {MAX_RECORD_BYTES} bytes and was dead-lettered unparsed (truncated preview kept)"
+            ),
+        );
+        self.record = serde_json::Value::String(crate::report::truncate(preview, 256));
+        self.total_violations += 1;
+        self.stats.blocked += 1;
+        Verdict::Block
+    }
+
+    fn next_row(&mut self) -> u64 {
+        self.row = self.stats.records;
+        self.stats.records += 1;
+        self.violations.clear();
+        self.row
+    }
+
+    fn unreadable(&mut self, text: &str, message: String) {
+        self.violations.push(Violation {
+            model: self.model.name.clone(),
+            field: None,
+            rule: crate::report::Rule::RecordNotObject,
+            row: Some(self.row),
+            value: Some(crate::report::truncate(text, 64)),
+            message,
+            // Not a value of any type: a line that is not JSON at all.
+            observed: None,
+        });
+    }
+
+    /// The violations of the record just judged.
+    pub fn violations(&self) -> &[Violation] {
+        &self.violations
+    }
+
+    /// The dead letter for the record just judged, stamped now.
+    pub fn dead_letter(&self) -> DlqEnvelope<'_> {
+        DlqEnvelope {
+            contract_id: &self.contract.id,
+            contract_version: &self.contract.version,
+            model: &self.model.name,
+            row: self.row,
+            ts: now_rfc3339(),
+            record: self.record.clone(),
+            violations: &self.violations,
+        }
+    }
+
+    /// The counts so far.
+    pub fn stats(&self) -> &GateStats {
+        &self.stats
+    }
+
+    /// Whether enforcement fails the stream so far: under `block`, more
+    /// violations than the contract's budget.
+    pub fn failed(&self) -> bool {
+        self.block && self.total_violations > self.contract.policy.max_violations
+    }
+
+    /// The counts, at the end of the stream.
+    pub fn into_stats(self) -> GateStats {
+        self.stats
+    }
+}
+
 /// Run the gate: read NDJSON from `input`, write clean records to `output`,
 /// dead-letter envelopes to `dlq`. Uniqueness tracking is exact and
 /// in-memory; the CLI surfaces a flag to disable it for unbounded streams.
@@ -242,26 +418,135 @@ pub fn run<R: BufRead, W: Write, D: Write>(
     dlq: &mut D,
     track_unique: bool,
 ) -> Result<GateOutcome> {
-    run_with_stats(contract, model, input, output, dlq, track_unique, None)
+    run_with_stats(
+        contract,
+        model,
+        input,
+        output,
+        dlq,
+        track_unique,
+        None,
+        None,
+    )
 }
 
 /// [`run`], optionally writing periodic [`StatsSink`] snapshots for
-/// `covenant serve`'s `GET /v1/gate/stats`.
+/// `covenant serve`'s `GET /v1/gate/stats`, and counting every violation
+/// into `report` for the run's `covenant-report/v1` document.
+#[allow(clippy::too_many_arguments)]
 pub fn run_with_stats<R: BufRead, W: Write, D: Write>(
+    contract: &CompiledContract,
+    model: &CompiledModel,
+    input: R,
+    output: &mut W,
+    dlq: &mut D,
+    track_unique: bool,
+    sink: Option<&mut StatsSink>,
+    report: Option<&mut Collector>,
+) -> Result<GateOutcome> {
+    let mode = Mode {
+        track_unique,
+        sink,
+        replies: None,
+        report,
+    };
+    run_inner(contract, model, input, output, dlq, mode)
+}
+
+/// [`run`] as a subprocess filter (`covenant gate --subprocess`): every line
+/// in gets exactly one line back, flushed at once. A record that goes on is
+/// answered on `output`; a record the gate withholds is answered on
+/// `replies` with its dead-letter envelope; a blank line gets a blank line.
+/// That is the protocol of Redpanda Connect's `subprocess` processor, where
+/// a reply on stdout replaces the message and a reply on stderr marks it
+/// failed. Dead letters still go to `dlq` too, and a record passed under
+/// `on_violation: warn` has its envelope there alone. Every violation is
+/// counted into `report`, when given, for the run's document.
+#[allow(clippy::too_many_arguments)]
+pub fn run_as_subprocess<R: BufRead, W: Write, D: Write>(
+    contract: &CompiledContract,
+    model: &CompiledModel,
+    input: R,
+    output: &mut W,
+    replies: &mut dyn Write,
+    dlq: &mut D,
+    track_unique: bool,
+    report: Option<&mut Collector>,
+) -> Result<GateOutcome> {
+    let mode = Mode {
+        track_unique,
+        sink: None,
+        replies: Some(replies),
+        report,
+    };
+    run_inner(contract, model, input, output, dlq, mode)
+}
+
+/// What a gate run tracks, and how it answers.
+struct Mode<'a> {
+    track_unique: bool,
+    sink: Option<&'a mut StatsSink>,
+    /// Subprocess mode: where a withheld record is answered.
+    replies: Option<&'a mut dyn Write>,
+    /// Counts every violation, and keeps the contract's samples of them, for
+    /// the run's report document.
+    report: Option<&'a mut Collector>,
+}
+
+/// Dead-letter a record and, in subprocess mode, flush it; a withheld
+/// record is also answered with the same line.
+fn dead_letter<D: Write>(
+    dlq: &mut D,
+    replies: &mut Option<&mut dyn Write>,
+    envelope: &DlqEnvelope<'_>,
+    withheld: bool,
+) -> Result<()> {
+    let io = |path: &'static str| {
+        move |e: std::io::Error| CovenantError::Io {
+            path: path.to_string(),
+            source: e,
+        }
+    };
+    let mut line = serde_json::to_vec(envelope).map_err(|e| CovenantError::Io {
+        path: "<dlq>".to_string(),
+        source: std::io::Error::other(e),
+    })?;
+    line.push(b'\n');
+    dlq.write_all(&line).map_err(io("<dlq>"))?;
+    if let Some(replies) = replies.as_deref_mut() {
+        dlq.flush().map_err(io("<dlq>"))?;
+        if withheld {
+            replies.write_all(&line).map_err(io("<gate replies>"))?;
+            replies.flush().map_err(io("<gate replies>"))?;
+        }
+    }
+    Ok(())
+}
+
+/// Count a record's violations into the run's report, when there is one.
+pub(crate) fn count_into(report: Option<&mut Collector>, violations: &[Violation]) {
+    if let Some(report) = report {
+        for v in violations {
+            report.record(v.field.as_deref(), v.rule, || v.clone());
+        }
+    }
+}
+
+fn run_inner<R: BufRead, W: Write, D: Write>(
     contract: &CompiledContract,
     model: &CompiledModel,
     mut input: R,
     output: &mut W,
     dlq: &mut D,
-    track_unique: bool,
-    mut sink: Option<&mut StatsSink>,
+    mode: Mode<'_>,
 ) -> Result<GateOutcome> {
-    let mut stats = GateStats::default();
-    let mut unique = track_unique.then(|| UniqueTracker::new(model));
-    let mut violations: Vec<Violation> = Vec::new();
-    let mut line = String::new();
-    let block = contract.policy.on_violation == OnViolation::Block;
-    let mut total_violations: u64 = 0;
+    let Mode {
+        track_unique,
+        mut sink,
+        mut replies,
+        mut report,
+    } = mode;
+    let mut gate = RecordGate::new(contract, model, track_unique);
 
     let io_err = |e: std::io::Error| CovenantError::Io {
         path: "<gate stream>".to_string(),
@@ -270,7 +555,6 @@ pub fn run_with_stats<R: BufRead, W: Write, D: Write>(
 
     let mut raw: Vec<u8> = Vec::new();
     loop {
-        line.clear();
         raw.clear();
         // Bounded read, as BYTES: a record with no newline (or one enormous
         // line) must not grow the buffer without limit — and the byte cap can
@@ -290,44 +574,19 @@ pub fn run_with_stats<R: BufRead, W: Write, D: Write>(
         // and silently destroy the following record.)
         let complete = raw.last() == Some(&b'\n');
         if read as u64 > MAX_RECORD_BYTES && !complete {
-            line.push_str(&String::from_utf8_lossy(&raw));
+            let preview = String::from_utf8_lossy(&raw).into_owned();
             // Drain the rest of the oversized record so the next iteration
             // starts on a real record boundary, then dead-letter a truncated
             // preview. Never forwarded downstream — even under `warn` — since
             // only a truncated prefix was kept.
             let mut discard = Vec::new();
             input.read_until(b'\n', &mut discard).map_err(io_err)?;
-            let row = stats.records;
-            stats.records += 1;
-            stats.blocked += 1;
-            total_violations += 1;
-            let oversize_violation = [Violation {
-                model: model.name.clone(),
-                field: None,
-                rule: crate::report::Rule::RecordNotObject,
-                row: Some(row),
-                value: Some(crate::report::truncate(&line, 64)),
-                message: format!(
-                    "row {row}: record exceeds {MAX_RECORD_BYTES} bytes and was dead-lettered unparsed (truncated preview kept)"
-                ),
-            }];
-            let envelope = DlqEnvelope {
-                contract_id: &contract.id,
-                contract_version: &contract.version,
-                model: &model.name,
-                row,
-                ts: now_rfc3339(),
-                record: serde_json::Value::String(crate::report::truncate(&line, 256)),
-                violations: &oversize_violation,
-            };
-            serde_json::to_writer(&mut *dlq, &envelope).map_err(|e| CovenantError::Io {
-                path: "<dlq>".to_string(),
-                source: std::io::Error::other(e),
-            })?;
-            dlq.write_all(b"\n").map_err(io_err)?;
+            gate.oversized(&preview);
+            count_into(report.as_deref_mut(), gate.violations());
+            dead_letter(dlq, &mut replies, &gate.dead_letter(), true)?;
             if let Some(s) = sink.as_deref_mut() {
-                s.on_record(true, &oversize_violation, None);
-                s.maybe_write(&stats);
+                s.on_record(true, gate.violations(), None);
+                s.maybe_write(gate.stats());
             }
             continue;
         }
@@ -336,123 +595,56 @@ pub fn run_with_stats<R: BufRead, W: Write, D: Write>(
         // which can still be valid JSON that passes the contract), and the
         // gate must never forward modified data. Invalid records dead-letter;
         // under `warn` the ORIGINAL bytes flow through untouched.
-        match std::str::from_utf8(&raw) {
-            Ok(text) => line.push_str(text),
-            Err(e) => {
-                let row = stats.records;
-                stats.records += 1;
-                total_violations += 1;
-                violations.clear();
-                let preview = String::from_utf8_lossy(&raw);
-                violations.push(Violation {
-                    model: model.name.clone(),
-                    field: None,
-                    rule: crate::report::Rule::RecordNotObject,
-                    row: Some(row),
-                    value: Some(crate::report::truncate(&preview, 64)),
-                    message: format!("row {row}: record is not valid UTF-8 ({e})"),
-                });
-                let envelope = DlqEnvelope {
-                    contract_id: &contract.id,
-                    contract_version: &contract.version,
-                    model: &model.name,
-                    row,
-                    ts: now_rfc3339(),
-                    record: serde_json::Value::String(crate::report::truncate(&preview, 256)),
-                    violations: &violations,
-                };
-                serde_json::to_writer(&mut *dlq, &envelope).map_err(|e| CovenantError::Io {
-                    path: "<dlq>".to_string(),
-                    source: std::io::Error::other(e),
-                })?;
-                dlq.write_all(b"\n").map_err(io_err)?;
-                if block {
-                    stats.blocked += 1;
-                } else {
-                    output.write_all(&raw).map_err(io_err)?;
-                    if !complete {
-                        output.write_all(b"\n").map_err(io_err)?;
-                    }
-                    stats.warned += 1;
-                    stats.passed += 1;
-                }
-                if let Some(s) = sink.as_deref_mut() {
-                    s.on_record(block, &violations, None);
-                    s.maybe_write(&stats);
-                }
-                continue;
+        let trimmed = std::str::from_utf8(&raw)
+            .ok()
+            .map(|text| text.trim_end_matches(['\n', '\r']));
+        if trimmed.is_some_and(|t| t.trim().is_empty()) {
+            // Not a record, but in subprocess mode every line is answered.
+            if replies.is_some() {
+                output.write_all(b"\n").map_err(io_err)?;
+                output.flush().map_err(io_err)?;
             }
-        }
-        let trimmed = line.trim_end_matches(['\n', '\r']);
-        if trimmed.trim().is_empty() {
             continue;
         }
-        let row = stats.records;
-        stats.records += 1;
-        violations.clear();
 
         // The sink's "added latency" is the real per-record cost the gate
         // puts in the pipe: parse + validate, measured only when a sink is
         // attached so the bare gate pays nothing.
-        let t0 = sink.is_some().then(Instant::now);
-        let record = match serde_json::from_str::<serde_json::Value>(trimmed) {
-            Ok(record) => {
-                row::validate_record(model, &record, row, unique.as_mut(), &mut violations);
-                Some(record)
-            }
-            Err(e) => {
-                violations.push(Violation {
-                    model: model.name.clone(),
-                    field: None,
-                    rule: crate::report::Rule::RecordNotObject,
-                    row: Some(row),
-                    value: Some(crate::report::truncate(trimmed, 64)),
-                    message: format!("row {row}: invalid JSON: {e}"),
-                });
-                None
-            }
-        };
+        let t0 = (sink.is_some() && trimmed.is_some()).then(Instant::now);
+        let verdict = gate.judge(&raw);
         let validate_ns = t0.map(|t| t.elapsed().as_nanos() as u64);
+        count_into(report.as_deref_mut(), gate.violations());
 
-        if violations.is_empty() {
-            output.write_all(trimmed.as_bytes()).map_err(io_err)?;
-            output.write_all(b"\n").map_err(io_err)?;
-            stats.passed += 1;
-            if let Some(s) = sink.as_deref_mut() {
-                s.on_record(false, &[], validate_ns);
-                s.maybe_write(&stats);
-            }
-            continue;
+        if verdict != Verdict::Pass {
+            dead_letter(
+                dlq,
+                &mut replies,
+                &gate.dead_letter(),
+                verdict == Verdict::Block,
+            )?;
         }
-
-        total_violations += violations.len() as u64;
-        let envelope = DlqEnvelope {
-            contract_id: &contract.id,
-            contract_version: &contract.version,
-            model: &model.name,
-            row,
-            ts: now_rfc3339(),
-            record: record.unwrap_or(serde_json::Value::String(trimmed.to_string())),
-            violations: &violations,
-        };
-        serde_json::to_writer(&mut *dlq, &envelope).map_err(|e| CovenantError::Io {
-            path: "<dlq>".to_string(),
-            source: std::io::Error::other(e),
-        })?;
-        dlq.write_all(b"\n").map_err(io_err)?;
-
-        if block {
-            stats.blocked += 1;
-        } else {
-            // Policy warn: the record still flows downstream.
-            output.write_all(trimmed.as_bytes()).map_err(io_err)?;
-            output.write_all(b"\n").map_err(io_err)?;
-            stats.warned += 1;
-            stats.passed += 1;
+        if verdict != Verdict::Block {
+            // The record goes on: without its line end, or, when it is not
+            // UTF-8 (only `warn` lets one through), exactly as it arrived.
+            match trimmed {
+                Some(text) => {
+                    output.write_all(text.as_bytes()).map_err(io_err)?;
+                    output.write_all(b"\n").map_err(io_err)?;
+                }
+                None => {
+                    output.write_all(&raw).map_err(io_err)?;
+                    if !complete {
+                        output.write_all(b"\n").map_err(io_err)?;
+                    }
+                }
+            }
+            if replies.is_some() {
+                output.flush().map_err(io_err)?;
+            }
         }
         if let Some(s) = sink.as_deref_mut() {
-            s.on_record(block, &violations, validate_ns);
-            s.maybe_write(&stats);
+            s.on_record(verdict == Verdict::Block, gate.violations(), validate_ns);
+            s.maybe_write(gate.stats());
         }
     }
     output.flush().map_err(io_err)?;
@@ -460,11 +652,14 @@ pub fn run_with_stats<R: BufRead, W: Write, D: Write>(
     // Final snapshot so the file always reflects the finished run, even for
     // short streams that never crossed the write interval.
     if let Some(s) = sink {
-        s.write(&stats);
+        s.write(gate.stats());
     }
 
-    let failed = block && total_violations > contract.policy.max_violations;
-    Ok(GateOutcome { stats, failed })
+    let failed = gate.failed();
+    Ok(GateOutcome {
+        stats: gate.into_stats(),
+        failed,
+    })
 }
 
 #[cfg(test)]
@@ -575,6 +770,7 @@ mod tests {
             &mut dlq,
             true,
             Some(&mut sink),
+            None,
         )
         .unwrap();
 
@@ -600,6 +796,148 @@ mod tests {
             !path.with_extension("tmp").exists(),
             "tmp file must be renamed away"
         );
+    }
+
+    #[test]
+    fn a_report_collector_counts_every_violation_the_gate_judged() {
+        let contract = compiled();
+        let model = contract.resolve_model(None).unwrap();
+        // Two type mismatches, one line that is not JSON, a blank line (not a
+        // record) and a clean record.
+        let input = b"{\"a\": 1}\nnot json\n\n{\"a\":\"ok\"}\n{\"a\": 2}\n".to_vec();
+        let mut collector = Collector::new(1);
+        let outcome = run_with_stats(
+            &contract,
+            model,
+            Cursor::new(input),
+            &mut Vec::new(),
+            &mut Vec::new(),
+            true,
+            None,
+            Some(&mut collector),
+        )
+        .unwrap();
+        assert_eq!(collector.total(), 3);
+        let header = crate::report::ReportHeader {
+            contract_id: "t".into(),
+            contract_version: "1.0.0".into(),
+            owner: None,
+            model: "m".into(),
+            source: "stdin".into(),
+        };
+        let report = collector.into_report(header, outcome.stats.records);
+        assert_eq!(report.rows, 4, "the blank line is not a record");
+        let counts: Vec<(&str, &str, u64)> = report
+            .per_rule
+            .iter()
+            .map(|c| (c.field.as_str(), c.rule, c.count))
+            .collect();
+        assert_eq!(
+            counts,
+            [("a", "type_mismatch", 2), ("", "record_not_object", 1)]
+        );
+        // The contract's cap (1 here) bounds the samples per field and rule;
+        // the rows are the gate's own, as its dead letters give them.
+        let rows: Vec<Option<u64>> = report.samples.iter().map(|v| v.row).collect();
+        assert_eq!(rows, [Some(0), Some(1)]);
+    }
+
+    fn compiled_with(policy: &str) -> CompiledContract {
+        let doc = Contract::parse(
+            &format!(
+                "covenant: 1\nid: t\nversion: 1.0.0\npolicy: {{ {policy} }}\n\
+                 models: {{ m: {{ fields: {{ id: {{ type: string, unique: true }}, n: {{ type: integer, min: 0 }} }} }} }}\n"
+            ),
+            "<test>",
+        )
+        .unwrap();
+        CompiledContract::compile(&doc).unwrap()
+    }
+
+    /// One record at a time: its verdict, its violations and its dead letter,
+    /// with row numbers counting every record judged.
+    #[test]
+    fn record_gate_judges_one_record_at_a_time() {
+        let contract = compiled_with("on_violation: block");
+        let model = contract.resolve_model(None).unwrap();
+        let mut gate = RecordGate::new(&contract, model, true);
+
+        assert_eq!(gate.judge(br#"{"id":"a","n":1}"#), Verdict::Pass);
+        assert!(gate.violations().is_empty());
+
+        assert_eq!(gate.judge(b"{\"id\":\"b\",\"n\":-1}\r\n"), Verdict::Block);
+        assert_eq!(gate.violations().len(), 1);
+        assert_eq!(gate.violations()[0].rule, crate::report::Rule::Min);
+        let letter = serde_json::to_value(gate.dead_letter()).unwrap();
+        assert_eq!(letter["row"], 1);
+        assert_eq!(letter["contract_id"], "t");
+        assert_eq!(letter["model"], "m");
+        assert_eq!(letter["record"], serde_json::json!({ "id": "b", "n": -1 }));
+        assert_eq!(letter["violations"][0]["rule"], "min");
+
+        assert_eq!(gate.judge(b"not json"), Verdict::Block);
+        let letter = serde_json::to_value(gate.dead_letter()).unwrap();
+        assert_eq!(letter["row"], 2);
+        assert_eq!(letter["record"], "not json");
+        assert_eq!(letter["violations"][0]["rule"], "record_not_object");
+
+        let stats = gate.stats();
+        assert_eq!(
+            (stats.records, stats.passed, stats.blocked, stats.warned),
+            (3, 1, 2, 0)
+        );
+        assert!(gate.failed());
+    }
+
+    /// `unique` spans the records a gate has judged, when it tracks them.
+    #[test]
+    fn record_gate_tracks_unique_keys_across_records() {
+        let contract = compiled_with("on_violation: block");
+        let model = contract.resolve_model(None).unwrap();
+
+        let mut tracking = RecordGate::new(&contract, model, true);
+        assert_eq!(tracking.judge(br#"{"id":"a"}"#), Verdict::Pass);
+        assert_eq!(tracking.judge(br#"{"id":"a"}"#), Verdict::Block);
+        assert_eq!(tracking.violations()[0].rule, crate::report::Rule::Unique);
+
+        let mut not_tracking = RecordGate::new(&contract, model, false);
+        assert_eq!(not_tracking.judge(br#"{"id":"a"}"#), Verdict::Pass);
+        assert_eq!(not_tracking.judge(br#"{"id":"a"}"#), Verdict::Pass);
+    }
+
+    /// Under `warn` a violating record goes on and is still reported; the
+    /// stream never fails.
+    #[test]
+    fn record_gate_under_warn_passes_and_reports() {
+        let contract = compiled_with("on_violation: warn");
+        let model = contract.resolve_model(None).unwrap();
+        let mut gate = RecordGate::new(&contract, model, true);
+
+        assert_eq!(gate.judge(br#"{"n":-1}"#), Verdict::Warn);
+        assert_eq!(gate.violations().len(), 1);
+        assert_eq!(gate.judge(&[0xff, 0xfe]), Verdict::Warn);
+        let letter = serde_json::to_value(gate.dead_letter()).unwrap();
+        assert_eq!(letter["violations"][0]["rule"], "record_not_object");
+        let stats = gate.stats();
+        assert_eq!(
+            (stats.records, stats.passed, stats.blocked, stats.warned),
+            (2, 2, 0, 2)
+        );
+        assert!(!gate.failed());
+    }
+
+    /// The contract's violation budget: the stream fails only past it.
+    #[test]
+    fn record_gate_fails_past_the_budget() {
+        let contract = compiled_with("on_violation: block, max_violations: 1");
+        let model = contract.resolve_model(None).unwrap();
+        let mut gate = RecordGate::new(&contract, model, false);
+
+        assert_eq!(gate.judge(br#"{"n":-1}"#), Verdict::Block);
+        assert!(!gate.failed(), "one violation is within the budget");
+        assert_eq!(gate.judge(br#"{"n":-2}"#), Verdict::Block);
+        assert!(gate.failed());
+        assert_eq!(gate.into_stats().blocked, 2);
     }
 
     /// Invalid UTF-8 *inside a quoted JSON string* must not be lossy-repaired

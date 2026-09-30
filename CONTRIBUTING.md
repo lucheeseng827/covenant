@@ -26,6 +26,35 @@ cargo build --features serve   # optional localhost console
 Tests are the specification. `cargo test` runs the full suite, including a
 doc-test on the embedding example in `src/lib.rs`.
 
+The Python module in `python/` is its own small workspace. Build the wheel and run its tests
+against the command it ships beside (pyarrow and polars are optional; the Arrow tests skip
+without them):
+
+```bash
+cd python
+pip install maturin && maturin build --release
+pip install target/wheels/covenant_data-*.whl pyarrow polars
+cd tests && python -m unittest -v test_covenant_data
+```
+
+The WASM build and the JS API over it (`js/`) are held to the native binary. Build both and
+run the two golden tests (Node 20+):
+
+```bash
+rustup target add wasm32-wasip1
+cargo build --bin covenant && cargo build --bin covenant --target wasm32-wasip1
+bash .github/scripts/wasm-golden.sh target/debug/covenant target/wasm32-wasip1/debug/covenant.wasm
+node js/golden.mjs target/debug/covenant target/wasm32-wasip1/debug/covenant.wasm
+```
+
+`covenant export postgres` is verified against a real Postgres. Those tests are skipped
+unless you point them at one (a UTF8 database, with `psql` on the PATH):
+
+```bash
+COVENANT_TEST_POSTGRES=postgresql://localhost/covenant \
+  cargo test --test postgres_test -- --include-ignored
+```
+
 ## Before you open a pull request
 
 ```bash
@@ -45,6 +74,9 @@ CI runs exactly these.
   (`src/engine/arrow.rs`, CSV/Parquet/Arrow). A constraint that behaves
   differently between them needs either parity or a documented reason —
   `ARCHITECTURE.md` records the one existing divergence, on null semantics.
+- **A rule change reaches the Postgres export too.** `covenant export postgres` compiles
+  each rule into a constraint that must accept exactly what the engines accept; change a rule
+  and `tests/postgres_test.rs` says whether the constraint still does.
 - **Messages that name the rule, the row, and the value.** Every violation
   message follows that shape. It is the product.
 - **Exit-code discipline.** 0 clean, 1 the subject violates, 2 the run failed.

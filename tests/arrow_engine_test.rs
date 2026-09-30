@@ -1,6 +1,9 @@
 //! Columnar-engine coverage: RecordBatches built in memory, exercising the
 //! schema pass, columnar null semantics, per-value constraints, uniqueness
 //! across batches, and the honest-failure arms (unsupported column types).
+// Arrow fixtures (Parquet files, RecordBatches) throughout: this suite runs
+// in every build with the `arrow` feature, which is on by default.
+#![cfg(feature = "arrow")]
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -11,7 +14,7 @@ use arrow_array::{
     StringArray, TimestampMillisecondArray, UInt64Array,
 };
 use covenant::compile::CompiledContract;
-use covenant::engine::arrow::validate_batch;
+use covenant::engine::arrow::{validate_batch, validate_source_batch, SchemaFindings};
 use covenant::engine::UniqueTracker;
 use covenant::report::{Collector, Rule};
 use covenant::spec::Contract;
@@ -231,6 +234,54 @@ fn unique_spans_batches() {
 }
 
 #[test]
+fn negative_zero_and_zero_are_one_value_to_unique_in_both_engines() {
+    let doc = Contract::parse(
+        "covenant: 1\nid: z\nversion: 1.0.0\nmodels:\n  m:\n    fields:\n      x: { type: float, unique: true }\n",
+        "<test>",
+    )
+    .unwrap();
+    let contract = CompiledContract::compile(&doc).unwrap();
+    let model = contract.resolve_model(None).unwrap();
+    let mut collector = Collector::new(10);
+    let mut unique = UniqueTracker::new(model);
+    let b = batch(vec![(
+        "x",
+        Arc::new(Float64Array::from(vec![-0.0, 0.0, 1.0])) as ArrayRef,
+    )]);
+    validate_batch(model, &b, 0, Some(&mut unique), &mut collector);
+    let b = batch(vec![(
+        "x",
+        Arc::new(Float32Array::from(vec![0.0f32, -0.0])) as ArrayRef,
+    )]);
+    validate_batch(model, &b, 3, Some(&mut unique), &mut collector);
+    let report = collector.into_report(
+        covenant::report::ReportHeader {
+            contract_id: "z".into(),
+            contract_version: "1.0.0".into(),
+            owner: None,
+            model: "m".into(),
+            source: "<memory>".into(),
+        },
+        5,
+    );
+    let rows: Vec<Option<u64>> = report.samples.iter().map(|v| v.row).collect();
+    assert_eq!(rows, vec![Some(1), Some(3), Some(4)]);
+
+    let mut out = Vec::new();
+    let mut unique = UniqueTracker::new(model);
+    for (i, r) in [
+        serde_json::json!({ "x": -0.0 }),
+        serde_json::json!({ "x": 0.0 }),
+    ]
+    .iter()
+    .enumerate()
+    {
+        covenant::engine::row::validate_record(model, r, i as u64, Some(&mut unique), &mut out);
+    }
+    assert_eq!(out.len(), 1, "{out:?}");
+}
+
+#[test]
 fn strict_flags_undeclared_columns() {
     let mut cols = vec![
         (
@@ -361,6 +412,63 @@ models:
     assert_eq!(counts[&("created".to_string(), "schema_type_mismatch")], 1);
 }
 
+/// The refusal is a fact about the source's schema, so a source that arrives
+/// as several batches reports it once, as it does a missing column;
+/// `validate_batch` still takes each batch as a whole source.
+#[test]
+fn allowed_on_native_timestamp_is_refused_once_per_source() {
+    let contract = Contract::parse(
+        r#"
+covenant: 1
+id: t
+version: 1.0.0
+models:
+  m:
+    fields:
+      created: { type: timestamp, allowed: ["2026-08-11T09:30:00Z"] }
+"#,
+        "<test>",
+    )
+    .unwrap();
+    let compiled = CompiledContract::compile(&contract).unwrap();
+    let model = compiled.resolve_model(None).unwrap();
+    let batches: Vec<RecordBatch> = (0..3i64)
+        .map(|i| {
+            batch(vec![(
+                "created",
+                Arc::new(TimestampMillisecondArray::from(vec![2 * i, 2 * i + 1])) as ArrayRef,
+            )])
+        })
+        .collect();
+    let refusals = |collector: Collector| {
+        let report = collector.into_report(
+            covenant::report::ReportHeader {
+                contract_id: "t".into(),
+                contract_version: "1.0.0".into(),
+                owner: None,
+                model: "m".into(),
+                source: "<memory>".into(),
+            },
+            6,
+        );
+        rule_counts(&report)[&("created".to_string(), "schema_type_mismatch")]
+    };
+
+    let mut source = Collector::new(10);
+    let mut findings = SchemaFindings::new();
+    let mut rows = 0;
+    for b in &batches {
+        rows += validate_source_batch(model, b, rows, None, &mut findings, &mut source);
+    }
+    assert_eq!(refusals(source), 1, "one source, one refusal");
+
+    let mut apart = Collector::new(10);
+    for b in &batches {
+        validate_batch(model, b, 0, None, &mut apart);
+    }
+    assert_eq!(refusals(apart), 3, "each batch taken as a whole source");
+}
+
 /// f32 values compare in f32 precision: 0.1f32 widened to f64 is not 0.1,
 /// and exact-f64 matching would fabricate violations on conforming data.
 #[test]
@@ -408,4 +516,164 @@ models: { m: { fields: { id: { type: integer, allowed: [18446744073709551615] } 
     let mut collector = Collector::new(10);
     validate_batch(model, &b, 0, None, &mut collector);
     assert_eq!(collector.total(), 0, "in-set u64::MAX must pass");
+}
+
+/// A boolean column with an allowed set: the value outside it is the one
+/// reported, as a boolean, and a null is left to the null rule.
+#[test]
+fn boolean_allowed_reports_the_value_outside_the_set() {
+    let contract = Contract::parse(
+        r#"
+covenant: 1
+id: t
+version: 1.0.0
+models: { m: { fields: { ok: { type: boolean, allowed: [true], nullable: true } } } }
+"#,
+        "<test>",
+    )
+    .unwrap();
+    let compiled = CompiledContract::compile(&contract).unwrap();
+    let model = compiled.resolve_model(None).unwrap();
+    let b = batch(vec![(
+        "ok",
+        Arc::new(BooleanArray::from(vec![
+            Some(true),
+            Some(false),
+            None,
+            Some(true),
+        ])) as ArrayRef,
+    )]);
+    let mut collector = Collector::new(10);
+    validate_batch(model, &b, 0, None, &mut collector);
+    let report = collector.into_report(
+        covenant::report::ReportHeader {
+            contract_id: "t".into(),
+            contract_version: "1.0.0".into(),
+            owner: None,
+            model: "m".into(),
+            source: "<memory>".into(),
+        },
+        4,
+    );
+    assert_eq!(report.violations, 1, "{:?}", report.samples);
+    let v = &report.samples[0];
+    assert_eq!((v.rule, v.row), (Rule::Allowed, Some(1)));
+    assert_eq!(
+        v.observed.as_ref().map(|o| o.kind),
+        Some(covenant::report::ValueKind::Boolean)
+    );
+}
+
+/// One source through `validate_source_batch`, with one `SchemaFindings`.
+fn check_source(batches: &[RecordBatch]) -> covenant::report::CheckReport {
+    let contract = compiled();
+    let model = contract.resolve_model(None).unwrap();
+    let mut collector = Collector::new(contract.policy.sample_violations);
+    let mut unique = UniqueTracker::new(model);
+    let mut schema = SchemaFindings::new();
+    let mut rows = 0u64;
+    for b in batches {
+        rows += validate_source_batch(
+            model,
+            b,
+            rows,
+            Some(&mut unique),
+            &mut schema,
+            &mut collector,
+        );
+    }
+    collector.into_report(
+        covenant::report::ReportHeader {
+            contract_id: contract.id.clone(),
+            contract_version: contract.version.clone(),
+            owner: None,
+            model: model.name.clone(),
+            source: "<memory>".into(),
+        },
+        rows,
+    )
+}
+
+/// Six rows with every kind of schema problem (two required columns missing,
+/// a float column of strings, an undeclared column in a strict model) and two
+/// kinds of row problem (bad ids, a repeated id).
+fn schema_problems() -> RecordBatch {
+    let text = |v: Vec<&str>| Arc::new(StringArray::from(v)) as ArrayRef;
+    batch(vec![
+        (
+            "order_id",
+            text(vec![
+                "ord_aaaa", "bad1", "ord_bbbb", "ord_cccc", "bad2", "ord_aaaa",
+            ]),
+        ),
+        ("ratio", text(vec!["0.1"; 6])),
+        ("mystery", text(vec!["x"; 6])),
+    ])
+}
+
+#[test]
+fn a_schema_problem_counts_once_per_source_however_it_is_batched() {
+    let whole = schema_problems();
+    let one = check(std::slice::from_ref(&whole));
+    let three = check_source(&[whole.slice(0, 2), whole.slice(2, 2), whole.slice(4, 2)]);
+    let counts = rule_counts(&one);
+    assert_eq!(rule_counts(&three), counts);
+    assert_eq!((three.violations, three.rows), (one.violations, one.rows));
+    for (field, rule) in [
+        ("amount", "schema_missing_field"),
+        ("created", "schema_missing_field"),
+        ("ratio", "schema_type_mismatch"),
+        ("mystery", "unexpected_field"),
+    ] {
+        assert_eq!(counts[&(field.to_string(), rule)], 1, "{field} {rule}");
+    }
+    assert_eq!(counts[&("order_id".to_string(), "pattern")], 2);
+    assert_eq!(counts[&("order_id".to_string(), "unique")], 1);
+    // Rows keep their place in the source.
+    assert!(three
+        .samples
+        .iter()
+        .any(|v| v.rule == Rule::Unique && v.row == Some(5)));
+}
+
+/// `validate_batch` checks one batch as a whole source, as it always has:
+/// called per batch, it counts a schema problem once per batch.
+#[test]
+fn validate_batch_holds_each_batch_to_the_schema_on_its_own() {
+    let whole = schema_problems();
+    let per_batch = check(&[whole.slice(0, 2), whole.slice(2, 2), whole.slice(4, 2)]);
+    let counts = rule_counts(&per_batch);
+    assert_eq!(counts[&("amount".to_string(), "schema_missing_field")], 3);
+    assert_eq!(counts[&("mystery".to_string(), "unexpected_field")], 3);
+    assert_eq!(counts[&("order_id".to_string(), "pattern")], 2);
+}
+
+/// Batches of one source need not share a schema: each distinct problem is
+/// reported once, when a batch first shows it, and a column of the wrong type
+/// is never read as the declared one.
+#[test]
+fn a_batch_whose_schema_changes_reports_each_new_problem_once() {
+    let id = |v: &str| Arc::new(StringArray::from(vec![v])) as ArrayRef;
+    let report = check_source(&[
+        batch(vec![("order_id", id("ord_aaaa"))]),
+        batch(vec![("order_id", id("ord_bbbb")), ("amount", id("12"))]),
+        batch(vec![("order_id", id("ord_cccc"))]),
+    ]);
+    let counts = rule_counts(&report);
+    assert_eq!(counts[&("amount".to_string(), "schema_missing_field")], 1);
+    assert_eq!(counts[&("amount".to_string(), "schema_type_mismatch")], 1);
+    assert_eq!(counts[&("created".to_string(), "schema_missing_field")], 1);
+    assert_eq!((report.violations, report.rows), (3, 3));
+}
+
+/// A source with no rows is held to its schema through an empty batch, and
+/// an empty batch after zero-row ones adds nothing it already reported.
+#[test]
+fn a_source_with_no_rows_reports_its_schema_once() {
+    let empty = RecordBatch::new_empty(schema_problems().schema());
+    let report = check_source(&[empty.clone(), empty]);
+    let counts = rule_counts(&report);
+    assert_eq!(counts[&("amount".to_string(), "schema_missing_field")], 1);
+    assert_eq!(counts[&("mystery".to_string(), "unexpected_field")], 1);
+    assert_eq!((report.violations, report.rows), (4, 0));
 }

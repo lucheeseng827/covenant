@@ -1,18 +1,23 @@
 //! Columnar validation over Arrow `RecordBatch`es — the enforcement point for
 //! Parquet/CSV CI checks and for embedding Covenant inside Arrow-native
-//! pipelines (`covenant::engine::arrow::validate_batch` is the library API).
+//! pipelines. The library API is [`validate_batch`] for one batch and
+//! [`validate_source_batch`] for a source that arrives as several.
 //!
 //! Columnar null semantics (documented in ARCHITECTURE.md): a column has no
 //! way to distinguish "key absent" from "explicit null", so nulls in an
 //! optional (`required: false`) field's column are treated as absent and
 //! pass; nulls in a `required` field's column violate unless `nullable`.
 //! A `required` field whose column is missing entirely is a schema-level
-//! violation; an optional field's missing column is fine.
+//! violation; an optional field's missing column is fine. A schema-level
+//! violation is a fact about the source's schema, so it counts once per
+//! source however many batches carry it ([`SchemaFindings`]).
 //!
 //! Known representation limits (honest failures, never silent skips):
 //! dictionary-encoded, decimal, and Float16 columns are reported as
 //! `schema_type_mismatch` — the engine refuses to half-check a column it
 //! cannot iterate. Dictionary support is not implemented yet.
+
+use std::collections::HashSet;
 
 use arrow_array::cast::AsArray;
 use arrow_array::types::{
@@ -24,18 +29,82 @@ use arrow_array::{Array, RecordBatch};
 use arrow_schema::{DataType, TimeUnit};
 
 use crate::compile::{shape, CompiledField, CompiledModel};
-use crate::report::{truncate, Collector, Rule, Violation};
+use crate::report::{truncate, Collector, Observed, Rule, ValueKind, Violation};
 use crate::spec::FieldType;
 
 use super::UniqueTracker;
 
-/// Validate one batch. `base_row` offsets row numbers so multi-batch files
-/// report absolute positions. Returns the number of rows seen.
+/// The schema-level violations a source has reported so far: a required
+/// column missing, a column of the wrong type (or of a type a declared
+/// constraint cannot be evaluated on), an undeclared column in a strict
+/// model. Each is a fact about the source's schema, not about its rows, so it
+/// counts once per source; keep one of these per source and pass it to every
+/// [`validate_source_batch`] call for that source.
+#[derive(Debug, Default)]
+pub struct SchemaFindings {
+    seen: HashSet<(String, Rule)>,
+}
+
+impl SchemaFindings {
+    /// No findings yet, for a new source.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Count a schema-level violation the first time this source shows it.
+    fn record(
+        &mut self,
+        out: &mut Collector,
+        field: &str,
+        rule: Rule,
+        make: impl FnOnce() -> Violation,
+    ) {
+        if self.seen.insert((field.to_string(), rule)) {
+            out.record(Some(field), rule, make);
+        }
+    }
+}
+
+/// Validate one batch as a whole source: its schema, then its rows.
+/// `base_row` offsets row numbers. Returns the number of rows seen.
+///
+/// For a source that arrives as several batches, use
+/// [`validate_source_batch`] with one [`SchemaFindings`] for the source:
+/// calling this per batch counts a schema-level violation once per batch.
 pub fn validate_batch(
     model: &CompiledModel,
     batch: &RecordBatch,
     base_row: u64,
+    unique: Option<&mut UniqueTracker>,
+    out: &mut Collector,
+) -> u64 {
+    validate_source_batch(
+        model,
+        batch,
+        base_row,
+        unique,
+        &mut SchemaFindings::new(),
+        out,
+    )
+}
+
+/// Validate one batch of a source that arrives as several. `base_row`
+/// offsets row numbers so the source reports absolute positions, `unique`
+/// spans the whole source, and `schema_findings` holds what earlier batches
+/// reported about the source's schema, so a schema-level violation counts
+/// once however the source is split. Every batch's schema is still checked: a
+/// batch whose column has the wrong type reports it, if no earlier batch
+/// did, and that column is skipped, never read as the declared type.
+/// Returns the number of rows seen.
+///
+/// A source with no batches still has a schema: validate an empty batch of
+/// it (`RecordBatch::new_empty`) so a missing required column is reported.
+pub fn validate_source_batch(
+    model: &CompiledModel,
+    batch: &RecordBatch,
+    base_row: u64,
     mut unique: Option<&mut UniqueTracker>,
+    schema_findings: &mut SchemaFindings,
     out: &mut Collector,
 ) -> u64 {
     let schema = batch.schema();
@@ -44,7 +113,7 @@ pub fn validate_batch(
     for (idx, field) in model.fields.iter().enumerate() {
         let Some((col_idx, _)) = schema.column_with_name(&field.name) else {
             if field.required {
-                out.record(Some(&field.name), Rule::SchemaMissingField, || Violation {
+                schema_findings.record(out, &field.name, Rule::SchemaMissingField, || Violation {
                     model: model.name.clone(),
                     field: Some(field.name.clone()),
                     rule: Rule::SchemaMissingField,
@@ -54,13 +123,14 @@ pub fn validate_batch(
                         "required field {:?} is missing from the batch schema",
                         field.name
                     ),
+                    observed: None,
                 });
             }
             continue;
         };
         let column = batch.column(col_idx);
         if !type_compatible(field.ty, column.data_type()) {
-            out.record(Some(&field.name), Rule::SchemaTypeMismatch, || Violation {
+            schema_findings.record(out, &field.name, Rule::SchemaTypeMismatch, || Violation {
                 model: model.name.clone(),
                 field: Some(field.name.clone()),
                 rule: Rule::SchemaTypeMismatch,
@@ -72,6 +142,7 @@ pub fn validate_batch(
                     field.ty.name(),
                     column.data_type()
                 ),
+                observed: None,
             });
             continue;
         }
@@ -82,6 +153,7 @@ pub fn validate_batch(
             column.as_ref(),
             base_row,
             unique.as_deref_mut(),
+            schema_findings,
             out,
         );
     }
@@ -91,7 +163,7 @@ pub fn validate_batch(
         for schema_field in schema.fields() {
             if !model.field_index.contains_key(schema_field.name()) {
                 let name = schema_field.name().clone();
-                out.record(Some(&name), Rule::UnexpectedField, || Violation {
+                schema_findings.record(out, &name, Rule::UnexpectedField, || Violation {
                     model: model.name.clone(),
                     field: Some(name.clone()),
                     rule: Rule::UnexpectedField,
@@ -100,6 +172,7 @@ pub fn validate_batch(
                     message: format!(
                         "column {name:?} is not declared in the contract (strict model)"
                     ),
+                    observed: None,
                 });
             }
         }
@@ -111,7 +184,7 @@ pub fn validate_batch(
 /// Contract type ↔ Arrow column type. Deliberately explicit (no `is_integer`
 /// umbrella) so every accepted representation has a matching iteration arm
 /// below — compat and iteration must never disagree.
-fn type_compatible(ty: FieldType, dt: &DataType) -> bool {
+pub(crate) fn type_compatible(ty: FieldType, dt: &DataType) -> bool {
     let stringly = matches!(
         dt,
         DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View
@@ -164,6 +237,7 @@ fn null_gate(
                 "row {row}: field {:?} is null but the contract forbids null",
                 field.name
             ),
+            observed: Some(Observed::null()),
         });
     }
     false
@@ -173,6 +247,7 @@ fn null_gate(
 /// type information to compare in the right domain (integers in i128 so
 /// nothing wraps or loses precision, f32 in f32 so widening rounding error
 /// doesn't fabricate violations).
+#[derive(Clone, Copy)]
 enum NumVal {
     Int(i128),
     F64(f64),
@@ -182,6 +257,36 @@ enum NumVal {
     Opaque,
 }
 
+/// A value as its column holds it: what a violation observed of it (its type,
+/// its length, its digest), made only for the violations kept as samples.
+#[derive(Clone, Copy)]
+enum Held<'a> {
+    Str(&'a str),
+    Bool(bool),
+    Num(NumVal),
+    /// A native temporal or binary value, by its uniqueness key.
+    Native(ValueKind, &'a str),
+}
+
+impl Held<'_> {
+    fn observed(self) -> Option<Observed> {
+        Some(match self {
+            Held::Str(s) => Observed::string(s),
+            Held::Bool(b) => Observed::boolean(b),
+            Held::Num(NumVal::Int(n)) => Observed::integer(n),
+            Held::Num(NumVal::F64(n)) => Observed::number(n),
+            // Through its shortest decimal form, so a float32 0.1 is the
+            // 0.1 a record holds, not its 64-bit widening.
+            Held::Num(NumVal::F32(n)) => {
+                Observed::number(n.to_string().parse().unwrap_or(f64::from(n)))
+            }
+            Held::Num(NumVal::Opaque) => return None,
+            Held::Native(kind, key) => Observed::native(kind, key),
+        })
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn check_column(
     model: &CompiledModel,
     field: &CompiledField,
@@ -189,12 +294,14 @@ fn check_column(
     column: &dyn Array,
     base_row: u64,
     mut unique: Option<&mut UniqueTracker>,
+    schema_findings: &mut SchemaFindings,
     out: &mut Collector,
 ) {
     // `allowed` has no evaluable rendering on native temporal / uuid-binary
-    // columns. Refuse loudly, once per column, instead of silently passing
-    // every value — a gate that half-checks certifies bad data. (min/max,
-    // pattern, and length on these contract types are already lint errors.)
+    // columns. Refuse loudly instead of silently passing every value — a gate
+    // that half-checks certifies bad data. It is a fact about the schema, so
+    // it counts once per source. (min/max, pattern, and length on these
+    // contract types are already lint errors.)
     if field.allowed.is_some()
         && matches!(
             column.data_type(),
@@ -204,7 +311,7 @@ fn check_column(
                 | DataType::FixedSizeBinary(16)
         )
     {
-        out.record(Some(&field.name), Rule::SchemaTypeMismatch, || Violation {
+        schema_findings.record(out, &field.name, Rule::SchemaTypeMismatch, || Violation {
             model: model.name.clone(),
             field: Some(field.name.clone()),
             rule: Rule::SchemaTypeMismatch,
@@ -216,6 +323,7 @@ fn check_column(
                 field.name,
                 column.data_type()
             ),
+            observed: None,
         });
     }
 
@@ -310,7 +418,14 @@ fn check_column(
                 let v = a.value(i);
                 if let Some(allowed) = &field.allowed {
                     if !allowed.contains_bool(v) {
-                        push_allowed_violation(model, field, &v.to_string(), row, out);
+                        push_allowed_violation(
+                            model,
+                            field,
+                            &v.to_string(),
+                            Held::Bool(v),
+                            row,
+                            out,
+                        );
                     }
                 }
                 if track_unique {
@@ -319,6 +434,7 @@ fn check_column(
                         field,
                         field_idx,
                         &v.to_string(),
+                        Held::Bool(v),
                         row,
                         unique.as_deref_mut(),
                         out,
@@ -333,6 +449,12 @@ fn check_column(
             macro_rules! numeric_loop {
                 ($cast:expr, $to_num:expr) => {{
                     let a = $cast;
+                    // What a sample says a native temporal value was.
+                    let native = match dt {
+                        DataType::Timestamp(_, _) => Some(ValueKind::Timestamp),
+                        DataType::Date32 | DataType::Date64 => Some(ValueKind::Date),
+                        _ => None,
+                    };
                     for i in 0..a.len() {
                         let row = base_row + i as u64;
                         if !null_gate(model, field, a.is_null(i), row, out) {
@@ -342,11 +464,16 @@ fn check_column(
                         let (num, key): (NumVal, String) = $to_num(a.value(i));
                         check_numeric_value(model, field, num, &key, row, out);
                         if track_unique {
+                            let held = match native {
+                                Some(kind) => Held::Native(kind, &key),
+                                None => Held::Num(num),
+                            };
                             check_unique(
                                 model,
                                 field,
                                 field_idx,
                                 &key,
+                                held,
                                 row,
                                 unique.as_deref_mut(),
                                 out,
@@ -388,14 +515,28 @@ fn check_column(
                     NumVal::Int(v as i128),
                     v.to_string()
                 )),
-                DataType::Float32 => numeric_loop!(
-                    column.as_primitive::<Float32Type>(),
-                    |v: f32| (NumVal::F32(v), v.to_string())
-                ),
-                DataType::Float64 => numeric_loop!(
-                    column.as_primitive::<Float64Type>(),
-                    |v: f64| (NumVal::F64(v), v.to_string())
-                ),
+                // `-0.0 == 0.0` but they render "-0"/"0": one value, one
+                // uniqueness key, as the row engine keys it.
+                DataType::Float32 => {
+                    numeric_loop!(column.as_primitive::<Float32Type>(), |v: f32| (
+                        NumVal::F32(v),
+                        if v == 0.0 {
+                            "0".to_string()
+                        } else {
+                            v.to_string()
+                        }
+                    ))
+                }
+                DataType::Float64 => {
+                    numeric_loop!(column.as_primitive::<Float64Type>(), |v: f64| (
+                        NumVal::F64(v),
+                        if v == 0.0 {
+                            "0".to_string()
+                        } else {
+                            v.to_string()
+                        }
+                    ))
+                }
                 // Temporal + binary columns: type already satisfies the
                 // contract; only nulls and uniqueness are checkable (value
                 // constraints were refused at column level above).
@@ -438,6 +579,7 @@ fn check_column(
                                 field,
                                 field_idx,
                                 &key,
+                                Held::Native(ValueKind::Binary, &key),
                                 row,
                                 unique.as_deref_mut(),
                                 out,
@@ -455,16 +597,19 @@ fn check_column(
                         "column type {other} passed compatibility but has no check arm"
                     );
                     let rendered = other.to_string();
-                    out.record(Some(&field.name), Rule::SchemaTypeMismatch, || Violation {
-                        model: model.name.clone(),
-                        field: Some(field.name.clone()),
-                        rule: Rule::SchemaTypeMismatch,
-                        row: None,
-                        value: Some(rendered.clone()),
-                        message: format!(
+                    schema_findings.record(out, &field.name, Rule::SchemaTypeMismatch, || {
+                        Violation {
+                            model: model.name.clone(),
+                            field: Some(field.name.clone()),
+                            rule: Rule::SchemaTypeMismatch,
+                            row: None,
+                            value: Some(rendered.clone()),
+                            message: format!(
                             "field {:?} column type {rendered} has no value-check implementation",
                             field.name
                         ),
+                            observed: None,
+                        }
                     });
                 }
             }
@@ -513,6 +658,7 @@ fn check_str_value(
                 truncate(s, 64),
                 field.ty.name()
             ),
+            observed: Some(Observed::string(s)),
         });
         return;
     }
@@ -531,6 +677,7 @@ fn check_str_value(
                         "row {row}: field {:?} length {len} is below min_length {lo}",
                         field.name
                     ),
+                    observed: Some(Observed::string(s)),
                 });
             }
         }
@@ -546,6 +693,7 @@ fn check_str_value(
                         "row {row}: field {:?} length {len} exceeds max_length {hi}",
                         field.name
                     ),
+                    observed: Some(Observed::string(s)),
                 });
             }
         }
@@ -563,6 +711,7 @@ fn check_str_value(
                         truncate(s, 64),
                         field.pattern_src.as_deref().unwrap_or("")
                     ),
+                    observed: Some(Observed::string(s)),
                 });
             }
         }
@@ -580,6 +729,7 @@ fn check_str_value(
                         truncate(s, 64),
                         fmt.name()
                     ),
+                    observed: Some(Observed::string(s)),
                 });
             }
         }
@@ -587,11 +737,11 @@ fn check_str_value(
 
     if let Some(allowed) = &field.allowed {
         if !allowed.contains_str(s) {
-            push_allowed_violation(model, field, s, row, out);
+            push_allowed_violation(model, field, s, Held::Str(s), row, out);
         }
     }
     if track_unique {
-        check_unique(model, field, field_idx, s, row, unique, out);
+        check_unique(model, field, field_idx, s, Held::Str(s), row, unique, out);
     }
 }
 
@@ -650,6 +800,7 @@ fn check_numeric_value(
                 "row {row}: field {:?} value {key} is below min {min}",
                 field.name
             ),
+            observed: Held::Num(num).observed(),
         });
     }
     if above_max {
@@ -664,18 +815,21 @@ fn check_numeric_value(
                 "row {row}: field {:?} value {key} exceeds max {max}",
                 field.name
             ),
+            observed: Held::Num(num).observed(),
         });
     }
     if allowed_hit == Some(false) {
-        push_allowed_violation(model, field, key, row, out);
+        push_allowed_violation(model, field, key, Held::Num(num), row, out);
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn check_unique(
     model: &CompiledModel,
     field: &CompiledField,
     field_idx: usize,
     key: &str,
+    held: Held<'_>,
     row: u64,
     unique: Option<&mut UniqueTracker>,
     out: &mut Collector,
@@ -693,6 +847,7 @@ fn check_unique(
                 field.name,
                 truncate(key, 64)
             ),
+            observed: held.observed(),
         });
     }
 }
@@ -701,6 +856,7 @@ fn push_allowed_violation(
     model: &CompiledModel,
     field: &CompiledField,
     rendered: &str,
+    held: Held<'_>,
     row: u64,
     out: &mut Collector,
 ) {
@@ -717,5 +873,6 @@ fn push_allowed_violation(
             truncate(rendered, 64),
             allowed.describe()
         ),
+        observed: held.observed(),
     });
 }

@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  The gate as a Java library. The build compiles ../embed (the engine as a
+  WebAssembly reactor module) with cargo and bundles the module as a
+  resource; Chicory runs it, compiled to JVM bytecode when the gate opens.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>net.mancube.covenant</groupId>
+    <artifactId>covenant-parent</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+  </parent>
+
+  <artifactId>covenant-jvm</artifactId>
+  <name>Covenant for the JVM</name>
+  <description>The Covenant gate as a Java library: the engine's WebAssembly build, run on Chicory.</description>
+
+  <properties>
+    <!-- Where the Rust module is built from. -->
+    <covenant.embed>${project.basedir}/../embed</covenant.embed>
+  </properties>
+
+  <dependencies>
+    <dependency>
+      <groupId>com.dylibso.chicory</groupId>
+      <artifactId>runtime</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>com.dylibso.chicory</groupId>
+      <artifactId>wasi</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>com.dylibso.chicory</groupId>
+      <artifactId>compiler</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>exec-maven-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>cargo-build-embed</id>
+            <phase>generate-resources</phase>
+            <goals>
+              <goal>exec</goal>
+            </goals>
+            <configuration>
+              <executable>cargo</executable>
+              <workingDirectory>${covenant.embed}</workingDirectory>
+              <arguments>
+                <argument>build</argument>
+                <argument>--release</argument>
+                <argument>--target</argument>
+                <argument>wasm32-wasip1</argument>
+              </arguments>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-resources-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>bundle-embed</id>
+            <phase>process-resources</phase>
+            <goals>
+              <goal>copy-resources</goal>
+            </goals>
+            <configuration>
+              <outputDirectory>${project.build.outputDirectory}/net/mancube/covenant</outputDirectory>
+              <resources>
+                <resource>
+                  <directory>${covenant.embed}/target/wasm32-wasip1/release</directory>
+                  <includes>
+                    <include>covenant_embed.wasm</include>
+                  </includes>
+                </resource>
+              </resources>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+</project>

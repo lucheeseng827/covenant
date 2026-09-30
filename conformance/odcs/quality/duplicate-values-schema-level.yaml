@@ -1,0 +1,27 @@
+vector: 1
+id: quality/duplicate-values-schema-level
+standard: ODCS v3.1.0
+cites: "data-quality.md: duplicateValues (schema)"
+description: "Schema-level duplicateValues over one property, with mustBe: 0."
+note: "Which record an engine names for a duplicate varies, so only the verdict is pinned."
+contract: |
+  apiVersion: v3.1.0
+  kind: DataContract
+  id: vector
+  version: 1.0.0
+  schema:
+    - name: t
+      properties:
+        - name: v
+          logicalType: string
+      quality:
+        - metric: duplicateValues
+          arguments:
+            properties: [v]
+          mustBe: 0
+records:
+  - { v: "x" }
+  - { v: "y" }
+  - { v: "x" }
+expect:
+  verdict: fail

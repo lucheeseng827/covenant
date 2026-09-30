@@ -1,0 +1,79 @@
+{
+  "report": 1,
+  "kind": "check",
+  "verdict": "fail",
+  "engine": {
+    "name": "covenant",
+    "version": "<version>"
+  },
+  "run": {
+    "plane": "cli",
+    "started_at": "<started_at>",
+    "duration_ms": 0
+  },
+  "budget": 0,
+  "violations": 4,
+  "sample_mode": "masked",
+  "checks": [
+    {
+      "contract_id": "orders",
+      "contract_version": "1.0.0",
+      "owner": "data@acme.io",
+      "model": "orders",
+      "source": "orders.ndjson",
+      "rows": 3,
+      "violations": 4,
+      "per_rule": [
+        {
+          "field": "order_id",
+          "rule": "unique",
+          "count": 1
+        },
+        {
+          "field": "amount",
+          "rule": "min",
+          "count": 1
+        },
+        {
+          "field": "currency",
+          "rule": "allowed",
+          "count": 1
+        },
+        {
+          "field": "order_id",
+          "rule": "pattern",
+          "count": 1
+        }
+      ],
+      "samples": [
+        {
+          "field": "order_id",
+          "rule": "unique",
+          "row": 1,
+          "type": "string",
+          "length": 8
+        },
+        {
+          "field": "amount",
+          "rule": "min",
+          "row": 1,
+          "type": "integer"
+        },
+        {
+          "field": "currency",
+          "rule": "allowed",
+          "row": 1,
+          "type": "string",
+          "length": 3
+        },
+        {
+          "field": "order_id",
+          "rule": "pattern",
+          "row": 2,
+          "type": "string",
+          "length": 7
+        }
+      ]
+    }
+  ]
+}

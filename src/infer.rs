@@ -655,8 +655,14 @@ pub fn infer_paths(paths: &[PathBuf], opts: &InferOptions) -> Result<Draft> {
         let before = sampler.records;
         match format {
             crate::sources::DataFormat::Ndjson => sample_ndjson(path, limit, &mut sampler)?,
+            #[cfg(feature = "arrow")]
             crate::sources::DataFormat::Csv => sample_csv(path, limit, &mut sampler)?,
+            #[cfg(feature = "arrow")]
             crate::sources::DataFormat::Parquet => sample_parquet(path, limit, &mut sampler)?,
+            #[cfg(not(feature = "arrow"))]
+            other @ (crate::sources::DataFormat::Csv | crate::sources::DataFormat::Parquet) => {
+                return Err(crate::sources::without_arrow(path, other))
+            }
         }
         let _ = before;
     }
@@ -829,6 +835,7 @@ fn json_obs(v: &serde_json::Value) -> Obs<'_> {
 
 /// Read CSV through arrow-csv's own type sniffing, then let every text
 /// column fall through to string-shape analysis.
+#[cfg(feature = "arrow")]
 fn sample_csv(path: &Path, limit: u64, sampler: &mut Sampler) -> Result<()> {
     use arrow_csv::reader::Format;
     let io_err = |e: std::io::Error| CovenantError::Io {
@@ -865,6 +872,7 @@ fn sample_csv(path: &Path, limit: u64, sampler: &mut Sampler) -> Result<()> {
 }
 
 /// Read Parquet, whose embedded schema is authoritative for column types.
+#[cfg(feature = "arrow")]
 fn sample_parquet(path: &Path, limit: u64, sampler: &mut Sampler) -> Result<()> {
     use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
     let file = std::fs::File::open(path).map_err(|e| CovenantError::Io {
@@ -892,6 +900,7 @@ fn sample_parquet(path: &Path, limit: u64, sampler: &mut Sampler) -> Result<()> 
 }
 
 /// Feed one Arrow batch through the same accumulator the JSON path uses.
+#[cfg(feature = "arrow")]
 fn sample_batch(batch: &arrow_array::RecordBatch, limit: u64, sampler: &mut Sampler) {
     use arrow_array::{cast::AsArray, types::*, Array};
     use arrow_schema::DataType;
@@ -967,6 +976,7 @@ fn sample_batch(batch: &arrow_array::RecordBatch, limit: u64, sampler: &mut Samp
 
 /// Name an Arrow type that has no contract equivalent, for the note that
 /// tells the author what was flagged.
+#[cfg(feature = "arrow")]
 fn arrow_kind(dt: &arrow_schema::DataType) -> &'static str {
     use arrow_schema::DataType;
     match dt {
@@ -978,6 +988,7 @@ fn arrow_kind(dt: &arrow_schema::DataType) -> &'static str {
 }
 
 /// Render a temporal Arrow cell as the string the contract type promises.
+#[cfg(feature = "arrow")]
 fn render_temporal(array: &dyn arrow_array::Array, row: usize) -> String {
     use arrow_array::cast::AsArray;
     use arrow_schema::DataType;

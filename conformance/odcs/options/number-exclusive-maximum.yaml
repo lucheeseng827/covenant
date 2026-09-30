@@ -1,0 +1,24 @@
+vector: 1
+id: options/number-exclusive-maximum
+standard: ODCS v3.1.0
+cites: "schema.md: logicalTypeOptions.exclusiveMaximum"
+description: "exclusiveMaximum on a number excludes the bound."
+contract: |
+  apiVersion: v3.1.0
+  kind: DataContract
+  id: vector
+  version: 1.0.0
+  schema:
+    - name: t
+      properties:
+        - name: v
+          logicalType: number
+          logicalTypeOptions:
+            exclusiveMaximum: 1.5
+records:
+  - { v: 1.49 }
+  - { v: 1.5 }
+  - { v: 2 }
+expect:
+  verdict: fail
+  failing: [1, 2]

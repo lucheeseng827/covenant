@@ -1,0 +1,29 @@
+vector: 1
+id: quality/duplicate-values-composite
+standard: ODCS v3.1.0
+cites: "data-quality.md: duplicateValues (schema)"
+description: "Schema-level duplicateValues over two properties counts repeated combinations: (1, 1) twice fails."
+note: "Which record an engine names for a duplicate varies, so only the verdict is pinned."
+contract: |
+  apiVersion: v3.1.0
+  kind: DataContract
+  id: vector
+  version: 1.0.0
+  schema:
+    - name: t
+      properties:
+        - name: a
+          logicalType: integer
+        - name: b
+          logicalType: integer
+      quality:
+        - metric: duplicateValues
+          arguments:
+            properties: [a, b]
+          mustBe: 0
+records:
+  - { a: 1, b: 1 }
+  - { a: 1, b: 2 }
+  - { a: 1, b: 1 }
+expect:
+  verdict: fail

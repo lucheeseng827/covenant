@@ -1,0 +1,26 @@
+vector: 1
+id: quality/null-values-percent
+standard: ODCS v3.1.0
+cites: "data-quality.md: nullValues, unit"
+description: "nullValues in percent: 1 null in 4 rows is 25 %, below 50."
+contract: |
+  apiVersion: v3.1.0
+  kind: DataContract
+  id: vector
+  version: 1.0.0
+  schema:
+    - name: t
+      properties:
+        - name: v
+          logicalType: integer
+          quality:
+            - metric: nullValues
+              mustBeLessThan: 50
+              unit: percent
+records:
+  - { v: null }
+  - { v: 1 }
+  - { v: 1 }
+  - { v: 1 }
+expect:
+  verdict: pass

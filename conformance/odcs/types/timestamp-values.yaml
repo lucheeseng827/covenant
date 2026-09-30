@@ -1,0 +1,25 @@
+vector: 1
+id: types/timestamp-values
+standard: ODCS v3.1.0
+cites: "schema.md: logicalType, logicalTypeOptions.format"
+description: "An ISO 8601 timestamp with a zone, with or without fractional seconds; a word, month 13 and an epoch number are not timestamps."
+note: "Timestamps without a zone are left out: see the questions in CONFORMANCE.md."
+contract: |
+  apiVersion: v3.1.0
+  kind: DataContract
+  id: vector
+  version: 1.0.0
+  schema:
+    - name: t
+      properties:
+        - name: v
+          logicalType: timestamp
+records:
+  - { v: "2026-09-24T10:00:00Z" }
+  - { v: "2026-09-24T10:00:00.123+02:00" }
+  - { v: "yesterday" }
+  - { v: "2026-13-01T00:00:00Z" }
+  - { v: 1727172000 }
+expect:
+  verdict: fail
+  failing: [2, 3, 4]

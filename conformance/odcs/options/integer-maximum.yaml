@@ -1,0 +1,24 @@
+vector: 1
+id: options/integer-maximum
+standard: ODCS v3.1.0
+cites: "schema.md: logicalTypeOptions.maximum"
+description: "maximum is inclusive: values <= maximum."
+contract: |
+  apiVersion: v3.1.0
+  kind: DataContract
+  id: vector
+  version: 1.0.0
+  schema:
+    - name: t
+      properties:
+        - name: v
+          logicalType: integer
+          logicalTypeOptions:
+            maximum: 10
+records:
+  - { v: 10 }
+  - { v: 11 }
+  - { v: -5 }
+expect:
+  verdict: fail
+  failing: [1]

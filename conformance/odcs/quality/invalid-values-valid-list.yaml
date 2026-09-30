@@ -1,0 +1,28 @@
+vector: 1
+id: quality/invalid-values-valid-list
+standard: ODCS v3.1.0
+cites: "data-quality.md: invalidValues (validValues)"
+description: "invalidValues with validValues [kg, lb] and mustBe: 0 fails any other value."
+note: "Whether a null is invalid under validValues is left out: see the questions in CONFORMANCE.md."
+contract: |
+  apiVersion: v3.1.0
+  kind: DataContract
+  id: vector
+  version: 1.0.0
+  schema:
+    - name: t
+      properties:
+        - name: v
+          logicalType: string
+          quality:
+            - metric: invalidValues
+              arguments:
+                validValues: [kg, lb]
+              mustBe: 0
+records:
+  - { v: "kg" }
+  - { v: "lb" }
+  - { v: "g" }
+expect:
+  verdict: fail
+  failing: [2]

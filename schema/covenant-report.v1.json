@@ -1,0 +1,245 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/lucheeseng827/covenant/main/schema/covenant-report.v1.json",
+  "title": "covenant-report/v1",
+  "description": "One run's verdict, as `covenant check`, `gate` and `diff` write it with --report-json, and the Python face's Report.write_report. Within revision 1 fields, kinds and planes are only ever added, never renamed or removed: read it ignoring fields you do not know, and skip a kind you do not know. Samples never carry a value. See docs/REPORT.md.",
+  "type": "object",
+  "required": ["report", "kind", "verdict", "engine", "run"],
+  "properties": {
+    "report": { "description": "The revision key.", "const": 1 },
+    "kind": {
+      "description": "What ran: check (data checked against a contract, by the command or the Python face), gate (a stream held to a contract record by record) or diff (two versions of a contract compared).",
+      "enum": ["check", "gate", "diff"]
+    },
+    "verdict": {
+      "description": "pass (exit 0) or fail (exit 1). check and gate: fail is over the budget, and warn is over it under `on_violation: warn`, reported but not failed (exit 0). diff: fail is a change at or above --fail-on.",
+      "enum": ["pass", "fail", "warn"]
+    },
+    "engine": {
+      "type": "object",
+      "required": ["name", "version"],
+      "properties": {
+        "name": { "const": "covenant" },
+        "version": { "type": "string" }
+      }
+    },
+    "run": {
+      "type": "object",
+      "required": ["plane", "started_at", "duration_ms"],
+      "properties": {
+        "plane": {
+          "description": "What produced the document: a command (ci when a CI provider was detected, cli otherwise), the stream gate (gate) or the Python face (python). The gate and the Python face keep their plane in CI, with the CI run in `ci`.",
+          "enum": ["cli", "ci", "gate", "python"]
+        },
+        "started_at": { "description": "RFC 3339, UTC.", "type": "string", "format": "date-time" },
+        "duration_ms": { "type": "integer", "minimum": 0 },
+        "ci": { "$ref": "#/$defs/ci" }
+      }
+    },
+    "budget": { "description": "check and gate: the run's violation budget.", "type": "integer", "minimum": 0 },
+    "violations": { "description": "check and gate: violations across every source of the run.", "type": "integer", "minimum": 0 },
+    "sample_mode": {
+      "description": "check and gate. masked: each sample's field, rule and row, and the value's type and length. hashed: masked, and a keyed hash of each value. none: no samples.",
+      "enum": ["masked", "hashed", "none"]
+    },
+    "sample_key": {
+      "description": "hashed only: the id of the key the hashes were made with. Compare hashes only between documents with the same sample_key.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{16}$"
+    },
+    "checks": {
+      "description": "check and gate: one entry per source; a gate has one, its stream.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/check" }
+    },
+    "gate": { "$ref": "#/$defs/gate" },
+    "diff": { "$ref": "#/$defs/diff" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "sample_mode": { "const": "none" } } },
+      "then": { "properties": { "checks": { "items": { "properties": { "samples": { "maxItems": 0 } } } } } }
+    },
+    {
+      "if": { "required": ["sample_mode"], "properties": { "sample_mode": { "const": "hashed" } } },
+      "then": { "required": ["sample_key"] },
+      "else": {
+        "not": { "required": ["sample_key"] },
+        "properties": { "checks": { "items": { "properties": { "samples": { "items": { "not": { "required": ["hash"] } } } } } } }
+      }
+    },
+    {
+      "if": { "properties": { "run": { "required": ["ci"] } } },
+      "then": { "properties": { "run": { "properties": { "plane": { "not": { "const": "cli" } } } } } }
+    },
+    {
+      "if": { "properties": { "run": { "properties": { "plane": { "const": "ci" } } } } },
+      "then": { "properties": { "run": { "required": ["ci"] } } }
+    },
+    {
+      "if": { "required": ["kind"], "properties": { "kind": { "enum": ["check", "gate"] } } },
+      "then": { "required": ["budget", "violations", "sample_mode", "checks"] }
+    },
+    {
+      "if": { "required": ["kind"], "properties": { "kind": { "const": "gate" } } },
+      "then": { "required": ["gate"] }
+    },
+    {
+      "if": { "required": ["kind"], "properties": { "kind": { "const": "diff" } } },
+      "then": { "required": ["diff"], "properties": { "verdict": { "enum": ["pass", "fail"] } } }
+    }
+  ],
+  "$defs": {
+    "ci": {
+      "type": "object",
+      "required": ["provider"],
+      "properties": {
+        "provider": { "enum": ["github-actions", "gitlab-ci", "unknown"] },
+        "repository": { "type": "string" },
+        "sha": { "type": "string" },
+        "ref": { "description": "The full ref: refs/heads/…, refs/tags/… or refs/pull/….", "type": "string", "pattern": "^refs/" },
+        "run_url": { "type": "string" }
+      }
+    },
+    "check": {
+      "description": "One source's verdict: a file of a check, or a gate's stream.",
+      "type": "object",
+      "required": ["contract_id", "contract_version", "model", "source", "rows", "violations", "per_rule", "samples"],
+      "properties": {
+        "contract_id": { "type": "string" },
+        "contract_version": { "type": "string" },
+        "owner": { "type": "string" },
+        "model": { "type": "string" },
+        "source": { "description": "The source as the run named it. A gate's stream is stdin, or kafka://<first bootstrap server>/<topic> for the Kafka gate.", "type": "string" },
+        "as_consumer": { "description": "Set when only this consumer's declared fields were checked, with strict mode off: a scoped verdict, not a full one.", "type": "string" },
+        "rows": { "type": "integer", "minimum": 0 },
+        "violations": { "type": "integer", "minimum": 0 },
+        "per_rule": {
+          "description": "Exact counts per field and rule.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["field", "rule", "count"],
+            "properties": {
+              "field": { "description": "Empty for record-level rules.", "type": "string" },
+              "rule": { "$ref": "#/$defs/rule" },
+              "count": { "type": "integer", "minimum": 1 }
+            }
+          }
+        },
+        "samples": { "type": "array", "items": { "$ref": "#/$defs/sample" } },
+        "unenforced": {
+          "description": "Contract rules the run skipped (--allow-unenforced): the verdict covers the rest.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/unenforced" }
+        }
+      }
+    },
+    "sample": {
+      "description": "Where one sampled violation was, and what its value was without the value. Never the value, nor a message that would quote it.",
+      "type": "object",
+      "required": ["rule"],
+      "properties": {
+        "field": { "type": "string" },
+        "rule": { "$ref": "#/$defs/rule" },
+        "row": { "description": "0-based record index; absent for schema-level findings. A gate's row is its dead letter's.", "type": "integer", "minimum": 0 },
+        "type": {
+          "description": "The value's type as its source held it; absent when the finding has no value (a missing field or column, a line that is not JSON).",
+          "enum": ["null", "boolean", "integer", "number", "string", "array", "object", "timestamp", "date", "binary"]
+        },
+        "length": { "description": "Characters of a string, items of an array, keys of an object.", "type": "integer", "minimum": 0 },
+        "hash": {
+          "description": "hashed only: the first 16 bytes of the HMAC-SHA256 of the value's digest under the document's key, in hex. The same value has the same hash under one key.",
+          "type": "string",
+          "pattern": "^[0-9a-f]{32}$"
+        }
+      },
+      "not": { "anyOf": [{ "required": ["value"] }, { "required": ["message"] }] }
+    },
+    "rule": {
+      "description": "The rule's stable name. New rules arrive in minor releases, so read an unknown name as a violation of a rule you do not know.",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*$"
+    },
+    "unenforced": {
+      "type": "object",
+      "required": ["path", "rule", "reason"],
+      "properties": {
+        "path": { "type": "string" },
+        "rule": { "type": "string" },
+        "reason": { "type": "string" }
+      }
+    },
+    "gate": {
+      "description": "gate: what became of the stream's records. passed and blocked add up to the rows read.",
+      "type": "object",
+      "required": ["passed", "blocked", "warned"],
+      "properties": {
+        "passed": { "description": "Records that went on, including those passed under `on_violation: warn`.", "type": "integer", "minimum": 0 },
+        "blocked": { "description": "Records withheld and dead-lettered.", "type": "integer", "minimum": 0 },
+        "warned": { "description": "Records that broke the contract and went on under `on_violation: warn`.", "type": "integer", "minimum": 0 },
+        "tombstones": { "description": "The Kafka gate only: records with no value, which go on unjudged and are not among the rows.", "type": "integer", "minimum": 0 }
+      }
+    },
+    "severity": { "enum": ["info", "risky", "breaking"] },
+    "diff": {
+      "description": "diff: a contract change, classified. Contracts are metadata, so nothing here is masked.",
+      "type": "object",
+      "required": ["contract_id", "old_version", "new_version", "fail_on", "changes"],
+      "properties": {
+        "contract_id": { "description": "The proposed contract's id.", "type": "string" },
+        "old_version": { "type": "string" },
+        "new_version": { "type": "string" },
+        "fail_on": {
+          "description": "The threshold the verdict was decided by (--fail-on).",
+          "enum": ["never", "any", "risky", "breaking", "breaking-with-consumers"]
+        },
+        "max_severity": { "description": "The worst change's severity; absent when nothing changed.", "$ref": "#/$defs/severity" },
+        "changes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["severity", "impact", "path", "message"],
+            "properties": {
+              "severity": { "$ref": "#/$defs/severity" },
+              "impact": { "description": "Who feels the change.", "enum": ["producers", "consumers", "both"] },
+              "path": { "description": "Where in the contract, e.g. models.orders.fields.amount.", "type": "string" },
+              "message": { "type": "string" }
+            }
+          }
+        },
+        "consumer_impact": {
+          "description": "Who the changes break, when consumer manifests were given (--consumers).",
+          "type": "object",
+          "required": ["contract", "manifests", "consumers_of_contract", "impacted", "unaffected"],
+          "properties": {
+            "contract": { "type": "string" },
+            "manifests": { "description": "Manifests read, whether or not they consume this contract.", "type": "integer", "minimum": 0 },
+            "consumers_of_contract": { "type": "integer", "minimum": 0 },
+            "impacted": {
+              "description": "Consumers a change hits, worst severity first.",
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["consumer", "severity", "fields", "changes"],
+                "properties": {
+                  "consumer": { "type": "string" },
+                  "owner": { "type": "string" },
+                  "severity": { "$ref": "#/$defs/severity" },
+                  "fields": { "type": "array", "items": { "type": "string" } },
+                  "changes": { "type": "array", "items": { "type": "string" } }
+                }
+              }
+            },
+            "unaffected": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "unenforced": {
+          "description": "Rules on either side that were not compared (--allow-unenforced): the diff covers the rest.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/unenforced" }
+        }
+      }
+    }
+  }
+}

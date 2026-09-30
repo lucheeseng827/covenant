@@ -1,0 +1,20 @@
+vector: 1
+id: nulls/optional-allows-null
+standard: ODCS v3.1.0
+cites: "schema.md: required (default false)"
+description: "Without required: true, nulls are allowed."
+contract: |
+  apiVersion: v3.1.0
+  kind: DataContract
+  id: vector
+  version: 1.0.0
+  schema:
+    - name: t
+      properties:
+        - name: v
+          logicalType: string
+records:
+  - { v: "a" }
+  - { v: null }
+expect:
+  verdict: pass

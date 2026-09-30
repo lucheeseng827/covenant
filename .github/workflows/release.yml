@@ -4,16 +4,36 @@
 # ops/release.yml in the source tree, not here on the mirror: the next sync
 # overwrites the mirror copy.
 #
-# Builds the multi-arch image and pushes it to Docker Hub, then refreshes the
-# Docker Hub repository overview from docs/DOCKERHUB.md so the description never
-# drifts from the release it documents.
+# Builds the multi-arch image, pushes it to Docker Hub, signs it and records how
+# it was built, then refreshes the Docker Hub repository overview from
+# docs/DOCKERHUB.md so the description never drifts from the release it documents.
 #
 # This repository IS the standalone crate, so the build context is the repository
 # root and the Dockerfile works exactly as it does for anyone cloning.
 #
+# Signing holds no key. cosign signs the pushed digest KEYLESSLY: Sigstore issues a
+# short-lived certificate to this job's GitHub OIDC identity (this repository, this
+# workflow file, this ref) and records the signature in its public transparency
+# log. Only a run of this workflow here can make a signature that `cosign verify`
+# accepts for that identity, and every signature it ever made is on the record.
+# The build provenance (SLSA, from actions/attest-build-provenance) is stored in
+# this repository's attestations. Neither goes inside the image's index, which
+# stays a plain multi-arch manifest list. SECURITY.md gives the commands that check
+# both, and the job runs them itself before it reports success. The identity those
+# commands name is the release TAG, so a manual publish to Docker Hub must be
+# dispatched on that tag too: every image there is then signed by a run on its tag.
+#
+# Keyless signing needs the OIDC token that only a real run of this job is given,
+# so nothing short of a run can test it. `rehearse` is that run without a release:
+# the same build, signature, attestation, verification and smoke test, pushed to
+# the throwaway registry ttl.sh (the image expires within the hour) instead of
+# Docker Hub.
+#
 # Triggers:
-#   - push a tag `v*`                 -> build + push mancube/covenant:<version> + :latest
-#   - manual run (workflow_dispatch)  -> build only (dry-run); set push=true to publish
+#   - push a tag `v*`                 -> build + push mancube/covenant:<version> + :latest, signed
+#   - manual run (workflow_dispatch)  -> build only (dry-run); set push=true to publish (run it
+#                                        on the tag v<version>), or rehearse=true to run the
+#                                        signing path on ttl.sh (from any branch)
 #
 # Required secrets, as ENVIRONMENT secrets on the `cicd` environment of this
 # repository (Settings -> Environments -> cicd -> Environment secrets):
@@ -23,7 +43,7 @@
 # The job declares `environment: cicd` so those resolve. A fork has no such
 # environment, so they resolve empty there — and the run degrades to a build
 # without a push rather than failing, so a contributor is never blocked on
-# credentials they cannot have.
+# credentials they cannot have. A rehearsal needs none.
 
 name: Release
 
@@ -37,6 +57,10 @@ on:
         required: true
       push:
         description: "Push to Docker Hub (false = build only, a dry-run)"
+        type: boolean
+        default: false
+      rehearse:
+        description: "Rehearse the signing path: push to ttl.sh (expires within 1h), then sign, attest and verify it. Never touches Docker Hub"
         type: boolean
         default: false
 
@@ -57,6 +81,10 @@ jobs:
     # DOCKER_USERNAME / DOCKER_PASSWORD are environment secrets on `cicd`, so the
     # job must declare the environment for `secrets.*` to resolve at all.
     environment: cicd
+    permissions:
+      contents: read      # check out the tagged source
+      id-token: write     # the job's OIDC identity is what signs: keyless cosign and the provenance
+      attestations: write # store the build-provenance attestation
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -68,12 +96,16 @@ jobs:
           EVENT: ${{ github.event_name }}
           DISPATCH_VERSION: ${{ inputs.version }}
           DISPATCH_PUSH: ${{ inputs.push }}
+          DISPATCH_REHEARSE: ${{ inputs.rehearse }}
           REF_NAME: ${{ github.ref_name }}
+          RUN_REF: ${{ github.ref }}
           HAS_CREDS: ${{ secrets.DOCKER_USERNAME != '' && secrets.DOCKER_PASSWORD != '' }}
         run: |
           set -euo pipefail
+          REHEARSE="false"
           if [ "$EVENT" = "workflow_dispatch" ]; then
             V="$DISPATCH_VERSION"; PUSH="$DISPATCH_PUSH"
+            if [ "$DISPATCH_REHEARSE" = "true" ]; then REHEARSE="true"; fi
           else
             V="${REF_NAME#v}"          # v0.1.0 -> 0.1.0
             PUSH="true"
@@ -81,17 +113,41 @@ jobs:
           if ! [[ "$V" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.+-]+)?$ ]]; then
             echo "::error::invalid version: '$V'"; exit 1
           fi
-          # Never fail a run that simply has no credentials — build, skip the push.
-          if [ "$PUSH" = "true" ] && [ "$HAS_CREDS" != "true" ]; then
-            echo "::warning::DOCKER_USERNAME / DOCKER_PASSWORD are not set on this repository; building without pushing."
-            PUSH="false"
+          if [ "$REHEARSE" = "true" ]; then
+            # A name nobody else pushes to. ttl.sh needs no credentials and deletes
+            # the image once its tag's lifetime runs out; it never claims :latest.
+            REF="ttl.sh/covenant-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            SUBJECT="$REF"
+            PUSH="true"; LATEST="false"
+          else
+            REF="$IMAGE"
+            # The signature and the attestation name the image fully qualified;
+            # Docker Hub's registry is index.docker.io.
+            SUBJECT="index.docker.io/${IMAGE}"
+            # Never fail a run that simply has no credentials — build, skip the push.
+            if [ "$PUSH" = "true" ] && [ "$HAS_CREDS" != "true" ]; then
+              echo "::warning::DOCKER_USERNAME / DOCKER_PASSWORD are not set on this repository; building without pushing."
+              PUSH="false"
+            fi
+            # The signature names the ref the run is on, and SECURITY.md tells users to
+            # expect the release tag. A publish by hand from a branch would carry the
+            # branch instead, and fail the very check that documents it.
+            if [ "$PUSH" = "true" ] && [ "$RUN_REF" != "refs/tags/v$V" ]; then
+              echo "::error::publishing to Docker Hub by hand must run on the tag v$V (this run is on $RUN_REF), so the image is signed with the identity SECURITY.md tells users to check. Dispatch it on the tag, or use rehearse to try the path from a branch."
+              exit 1
+            fi
+            # A pre-release must never claim :latest.
+            case "$V" in *-*) LATEST="false" ;; *) LATEST="true" ;; esac
           fi
-          # A pre-release must never claim :latest.
-          case "$V" in *-*) LATEST="false" ;; *) LATEST="true" ;; esac
-          echo "version=$V" >> "$GITHUB_OUTPUT"
-          echo "push=$PUSH"  >> "$GITHUB_OUTPUT"
-          echo "latest=$LATEST" >> "$GITHUB_OUTPUT"
-          echo "Version $V, push=$PUSH, tag latest=$LATEST"
+          {
+            echo "version=$V"
+            echo "push=$PUSH"
+            echo "latest=$LATEST"
+            echo "rehearse=$REHEARSE"
+            echo "ref=$REF"
+            echo "subject=$SUBJECT"
+          } >> "$GITHUB_OUTPUT"
+          echo "Version $V, push=$PUSH, tag latest=$LATEST, rehearse=$REHEARSE, image $REF"
 
       - name: Assert the tag matches the crate version
         env:
@@ -110,23 +166,29 @@ jobs:
         env:
           V: ${{ steps.cfg.outputs.version }}
           LATEST: ${{ steps.cfg.outputs.latest }}
+          REHEARSE: ${{ steps.cfg.outputs.rehearse }}
+          REF: ${{ steps.cfg.outputs.ref }}
         run: |
           set -euo pipefail
+          # ttl.sh reads a tag as the image's lifetime.
+          if [ "$REHEARSE" = "true" ]; then PRIMARY="${REF}:1h"; else PRIMARY="${REF}:${V}"; fi
           {
+            echo "primary=$PRIMARY"
             echo "list<<EOF"
-            echo "${IMAGE}:${V}"
-            [ "$LATEST" = "true" ] && echo "${IMAGE}:latest"
+            echo "$PRIMARY"
+            [ "$LATEST" = "true" ] && echo "${REF}:latest"
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
       - name: Log in to Docker Hub
-        if: steps.cfg.outputs.push == 'true'
+        if: steps.cfg.outputs.push == 'true' && steps.cfg.outputs.rehearse != 'true'
         uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
       - name: Build (and push on a tag) the multi-arch image
+        id: build
         uses: docker/build-push-action@48aba3b46d1b1fec4febb7c5d0c644b249a11355 # v6.10.0
         with:
           context: .
@@ -135,26 +197,94 @@ jobs:
           push: ${{ steps.cfg.outputs.push == 'true' }}
           tags: ${{ steps.tags.outputs.list }}
           # Keep the manifest a plain multi-arch image (no attestation manifest
-          # that some runtimes choke on).
+          # that some runtimes choke on). The signature and the provenance live
+          # beside the image instead: see the steps after the push.
           provenance: false
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - uses: sigstore/cosign-installer@ba7bc0a3fef59531c69a25acd34668d6d3fe6f22 # v4.1.0
+        if: steps.cfg.outputs.push == 'true'
+        with:
+          # Pinned: the commands below, and the ones SECURITY.md gives users, were
+          # checked against this release. Read its notes before a bump.
+          cosign-release: "v3.1.3"
+
+      # The index digest is what gets signed, so every platform's image is covered,
+      # and moving a tag later changes nothing about what was signed.
+      - name: Sign the image (keyless)
+        if: steps.cfg.outputs.push == 'true'
+        env:
+          SUBJECT: ${{ steps.cfg.outputs.subject }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          [ -n "$DIGEST" ] || { echo "::error::the build reported no digest to sign"; exit 1; }
+          cosign sign --yes "${SUBJECT}@${DIGEST}"
+
+      - name: Attest how the image was built (SLSA provenance)
+        if: steps.cfg.outputs.push == 'true'
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-name: ${{ steps.cfg.outputs.subject }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          # Stored in this repository's attestations rather than pushed beside the
+          # image, so a rehearsal on ttl.sh takes exactly the path a release does.
+          push-to-registry: false
+
+      - name: Verify the signature and the provenance, as SECURITY.md tells users to
+        if: steps.cfg.outputs.push == 'true'
+        env:
+          SUBJECT: ${{ steps.cfg.outputs.subject }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+          # Exactly who signed: this repository, this workflow file, this ref.
+          IDENTITY: https://github.com/${{ github.workflow_ref }}
+          REPO: ${{ github.repository }}
+          RUN_REF: ${{ github.ref }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ref="${SUBJECT}@${DIGEST}"
+          issuer="https://token.actions.githubusercontent.com"
+          # Retried: each check reads back what a step above has just written, and a
+          # registry does not always serve a new signature the moment it accepts it.
+          retry() {   # retry <what> <command...>
+            local what="$1"; shift
+            for attempt in 1 2 3 4 5 6; do
+              if "$@" > /dev/null 2>&1; then echo "$what verified"; return 0; fi
+              if [ "$attempt" = 6 ]; then
+                # Once more, unsuppressed, so the log carries the tool's own diagnosis.
+                if "$@"; then echo "$what verified"; return 0; fi
+                echo "::error::$what for $ref does not verify"
+                return 1
+              fi
+              echo "$what not visible yet (attempt $attempt); waiting $((attempt * 3))s"
+              sleep $((attempt * 3))
+            done
+          }
+          retry "The signature by $IDENTITY" \
+            cosign verify "$ref" --certificate-identity "$IDENTITY" --certificate-oidc-issuer "$issuer"
+          # Not just "some workflow in this repository": this workflow, at this ref.
+          workflow="${GITHUB_WORKFLOW_REF%@*}"   # owner/repo/.github/workflows/release.yml
+          retry "The build provenance from $workflow at $RUN_REF" \
+            gh attestation verify "oci://$ref" --repo "$REPO" \
+              --signer-workflow "$workflow" --source-ref "$RUN_REF"
+
       - name: Smoke-test the pushed image
         if: steps.cfg.outputs.push == 'true'
         env:
-          V: ${{ steps.cfg.outputs.version }}
+          REF: ${{ steps.tags.outputs.primary }}
         run: |
           set -euo pipefail
           # Exercise the image the way the overview documents it: lint a contract,
           # pass clean data, fail dirty data with exit 1. An image that cannot do
           # this is not shippable, and finding out later is worse.
-          docker run --rm -v "$PWD:/w" "${IMAGE}:${V}" \
+          docker run --rm -v "$PWD:/w" "$REF" \
             validate /w/examples/contracts/orders.yaml
-          docker run --rm -v "$PWD:/w" "${IMAGE}:${V}" \
+          docker run --rm -v "$PWD:/w" "$REF" \
             check /w/examples/data/orders.ndjson -c /w/examples/contracts/orders.yaml
           set +e
-          docker run --rm -v "$PWD:/w" "${IMAGE}:${V}" \
+          docker run --rm -v "$PWD:/w" "$REF" \
             check /w/examples/data/orders_bad.ndjson -c /w/examples/contracts/orders.yaml
           code=$?
           set -e
@@ -163,7 +293,8 @@ jobs:
 
       # The Docker Hub overview is the first thing most people read, and a stale
       # one is worse than none: it documents tags and flags that may no longer
-      # exist. Refresh it from the doc that ships with this release.
+      # exist. Refresh it from the doc that ships with this release. (A rehearsal
+      # never claims :latest, so it never gets here.)
       - name: Refresh the Docker Hub repository overview
         if: steps.cfg.outputs.push == 'true' && steps.cfg.outputs.latest == 'true'
         uses: peter-evans/dockerhub-description@e98e4d1628a5f3be2be7c231e50981aee98723ae # v4.0.0
@@ -179,13 +310,29 @@ jobs:
           V: ${{ steps.cfg.outputs.version }}
           PUSH: ${{ steps.cfg.outputs.push }}
           LATEST: ${{ steps.cfg.outputs.latest }}
+          REHEARSE: ${{ steps.cfg.outputs.rehearse }}
+          PRIMARY: ${{ steps.tags.outputs.primary }}
+          DIGEST: ${{ steps.build.outputs.digest }}
         run: |
           {
-            if [ "$PUSH" = "true" ]; then
-              echo "Pushed \`${IMAGE}:${V}\`$([ "$LATEST" = "true" ] && echo " and \`${IMAGE}:latest\`") (${PLATFORMS})."
+            if [ "$REHEARSE" = "true" ]; then
+              echo "Rehearsal: built, pushed, signed, attested, verified and smoke-tested \`${PRIMARY}\` (${PLATFORMS}), digest \`${DIGEST}\`."
+              echo "Docker Hub was not touched, and the image expires within the hour."
+            elif [ "$PUSH" = "true" ]; then
+              echo "Pushed \`${IMAGE}:${V}\`$([ "$LATEST" = "true" ] && echo " and \`${IMAGE}:latest\`") (${PLATFORMS}), signed and attested: digest \`${DIGEST}\`."
               echo ""
               echo '```bash'
               echo "docker run --rm -v \$PWD:/w ${IMAGE}:${V} check /w/orders.ndjson -c /w/orders.yaml"
+              echo '```'
+              echo ""
+              echo "Check it as a user would (SECURITY.md):"
+              echo ""
+              echo '```bash'
+              echo "cosign verify docker.io/${IMAGE}:${V} \\"
+              echo "  --certificate-identity https://github.com/${GITHUB_WORKFLOW_REF} \\"
+              echo "  --certificate-oidc-issuer https://token.actions.githubusercontent.com"
+              echo "gh attestation verify oci://docker.io/${IMAGE}:${V} --repo ${GITHUB_REPOSITORY} \\"
+              echo "  --signer-workflow ${GITHUB_WORKFLOW_REF%@*} --source-ref ${GITHUB_REF}"
               echo '```'
             else
               echo "Dry-run: built \`${IMAGE}:${V}\` (${PLATFORMS}), not pushed."

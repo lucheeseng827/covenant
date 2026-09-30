@@ -1,0 +1,27 @@
+vector: 1
+id: quality/invalid-values-pattern
+standard: ODCS v3.1.0
+cites: "data-quality.md: invalidValues (pattern)"
+description: "invalidValues with an anchored pattern and mustBe: 0 fails values that do not match."
+contract: |
+  apiVersion: v3.1.0
+  kind: DataContract
+  id: vector
+  version: 1.0.0
+  schema:
+    - name: t
+      properties:
+        - name: v
+          logicalType: string
+          quality:
+            - metric: invalidValues
+              arguments:
+                pattern: "^[A-Z]{3}$"
+              mustBe: 0
+records:
+  - { v: "ABC" }
+  - { v: "abc" }
+  - { v: "ABCD" }
+expect:
+  verdict: fail
+  failing: [1, 2]

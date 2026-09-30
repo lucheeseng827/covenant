@@ -1,0 +1,24 @@
+vector: 1
+id: properties/unique-duplicate-fails
+standard: ODCS v3.1.0
+cites: "schema.md: unique"
+description: "unique: true fails a dataset holding the same value twice."
+note: "Which record an engine names for a duplicate varies, so only the verdict is pinned."
+contract: |
+  apiVersion: v3.1.0
+  kind: DataContract
+  id: vector
+  version: 1.0.0
+  schema:
+    - name: t
+      properties:
+        - name: v
+          logicalType: string
+          unique: true
+records:
+  - { v: "a" }
+  - { v: "b" }
+  - { v: "a" }
+  - { v: "c" }
+expect:
+  verdict: fail

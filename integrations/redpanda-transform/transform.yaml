@@ -1,0 +1,12 @@
+# rpk's description of this transform. `rpk transform build` builds it (set
+# COVENANT_CONTRACT first; see README.md) and `rpk transform deploy` deploys it
+# with these topics. COVENANT_DLQ_TOPIC must name one of the output topics.
+name: covenant-gate
+description: Enforces a Covenant data contract on every record written to its input topic.
+input-topic: orders_raw
+output-topics:
+  - orders_validated
+  - orders_dlq
+language: rust
+env:
+  COVENANT_DLQ_TOPIC: orders_dlq

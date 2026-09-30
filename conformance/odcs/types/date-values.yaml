@@ -1,0 +1,27 @@
+vector: 1
+id: types/date-values
+standard: ODCS v3.1.0
+cites: "schema.md: logicalTypeOptions.format (date)"
+description: "A date in the format yyyy-MM-dd: month 13, day 32, another layout and a number are not dates."
+note: "Day 30 of February is left out: the JDK formatter the standard cites resolves it to the 28th by default."
+contract: |
+  apiVersion: v3.1.0
+  kind: DataContract
+  id: vector
+  version: 1.0.0
+  schema:
+    - name: t
+      properties:
+        - name: v
+          logicalType: date
+          logicalTypeOptions:
+            format: yyyy-MM-dd
+records:
+  - { v: "2026-09-24" }
+  - { v: "2026-13-01" }
+  - { v: "2026-09-32" }
+  - { v: "24/09/2026" }
+  - { v: 20260924 }
+expect:
+  verdict: fail
+  failing: [1, 2, 3, 4]

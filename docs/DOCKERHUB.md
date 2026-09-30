@@ -13,35 +13,40 @@
 | Tag | Notes |
 |---|---|
 | `latest` | newest stable release — moves on every release |
+| `0.2.0` | the `covenant-report/v1` document from every plane, OpenLineage, stream processors, the Python, WASM and JS faces; signed, with build provenance |
 | `0.1.0` | first release — contract spec + linter, CI file gate over NDJSON/CSV/Parquet, stream gate with dead-letter envelopes, breaking-change diff with consumer blast radius, `covenant infer` |
 | `*-rc.*`, `*-alpha.*` | pre-release builds, never tagged `latest` — do not use in production |
 
-**Pin a version in production: `mancube/covenant:0.1.0`.**
+**Pin a version in production: `mancube/covenant:0.2.0`.**
 
 `latest` is a moving target by definition. Covenant is usually wired into a CI gate or a producer's data path, and both are places where a silent change of behaviour is expensive — a new release that classifies one more change as breaking will start failing pipelines that passed yesterday. Pin the exact tag, upgrade deliberately, and read the changelog for the release you are moving to.
 
 For a stronger guarantee than a tag, pin the digest:
 
 ```bash
-docker pull mancube/covenant:0.1.0
-docker inspect --format='{{index .RepoDigests 0}}' mancube/covenant:0.1.0
+docker pull mancube/covenant:0.2.0
+docker inspect --format='{{index .RepoDigests 0}}' mancube/covenant:0.2.0
 # mancube/covenant@sha256:…  — use that in CI
 ```
 
 A tag can be repointed; a digest cannot.
+
+Releases after `0.1.0` are signed (keyless, Sigstore) and carry build provenance. The two
+commands that check an image before you run it are in
+[SECURITY.md](https://github.com/lucheeseng827/covenant/blob/main/SECURITY.md#releases).
 
 ## Quick start
 
 The binary is the entrypoint, so the `docker` args are just `covenant` subcommands. Everything is local file I/O, so mount the directory holding your contract and data:
 
 ```bash
-docker run --rm mancube/covenant:0.1.0 --version
+docker run --rm mancube/covenant:0.2.0 --version
 ```
 
 **1. Draft a contract from data you already have.** Nobody writes their first contract from a blank page:
 
 ```bash
-docker run --rm -v "$PWD:/w" mancube/covenant:0.1.0 \
+docker run --rm -v "$PWD:/w" mancube/covenant:0.2.0 \
   infer /w/exports/orders.parquet --out /w/orders.yaml
 ```
 
@@ -50,13 +55,13 @@ The draft is honest about its evidence: types, presence and nullability become r
 **2. Lint the contract.** `validate` refuses a contract it could not enforce, so a bad contract fails here rather than half-enforcing later:
 
 ```bash
-docker run --rm -v "$PWD:/w" mancube/covenant:0.1.0 validate /w/orders.yaml
+docker run --rm -v "$PWD:/w" mancube/covenant:0.2.0 validate /w/orders.yaml
 ```
 
 **3. Gate a file in CI.** This is the whole integration — exit 1 fails the job:
 
 ```bash
-docker run --rm -v "$PWD:/w" mancube/covenant:0.1.0 \
+docker run --rm -v "$PWD:/w" mancube/covenant:0.2.0 \
   check /w/exports/orders.parquet -c /w/orders.yaml
 ```
 
@@ -78,7 +83,7 @@ FAIL  /w/exports/orders.ndjson  [orders v1.2.0, model orders]
 **4. Block the pull request that breaks the contract.** `diff` runs on two YAML files — no data path, no credentials — which makes it the cheapest thing to adopt first:
 
 ```bash
-docker run --rm -v "$PWD:/w" mancube/covenant:0.1.0 \
+docker run --rm -v "$PWD:/w" mancube/covenant:0.2.0 \
   diff /w/main/orders.yaml /w/pr/orders.yaml --fail-on breaking
 ```
 
@@ -88,7 +93,7 @@ It classifies every change as **breaking**, **risky** or **info**, says whether 
 
 ```bash
 kcat -C -t orders_raw -e \
-  | docker run -i --rm -v "$PWD:/w" mancube/covenant:0.1.0 \
+  | docker run -i --rm -v "$PWD:/w" mancube/covenant:0.2.0 \
       gate -c /w/orders.yaml --dlq /w/orders.dlq.ndjson \
   | kcat -P -t orders_validated
 ```
@@ -110,7 +115,7 @@ Never conflate 1 and 2. A pipeline that treats "the run crashed" as "the data wa
 The image runs as uid `65532` with no shell. Mounted paths must be readable by that uid, and any directory it writes to (a `--dlq` target, an `--out` path) must be writable by it:
 
 ```bash
-docker run --rm -u "$(id -u):$(id -g)" -v "$PWD:/w" mancube/covenant:0.1.0 \
+docker run --rm -u "$(id -u):$(id -g)" -v "$PWD:/w" mancube/covenant:0.2.0 \
   check /w/orders.ndjson -c /w/orders.yaml
 ```
 

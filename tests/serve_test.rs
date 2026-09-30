@@ -40,8 +40,46 @@ fn app_with(
         model: compiled.resolve_model(None).unwrap().name.clone(),
         doc,
         compiled,
+        unenforced: Vec::new(),
         dlq_path,
         gate_stats_path,
+    }))
+}
+
+/// An ODCS contract with one rule the runtime cannot enforce (the `sql` check).
+const ODCS_PARTIAL: &str = r#"
+apiVersion: v3.2.0
+kind: DataContract
+id: orders
+version: 1.2.0
+schema:
+  - name: orders
+    properties:
+      - name: order_id
+        logicalType: string
+        required: true
+      - name: amount
+        logicalType: integer
+        logicalTypeOptions: { minimum: 0 }
+        quality:
+          - type: sql
+            query: SELECT COUNT(*) FROM orders WHERE amount > 1000000
+            mustBe: 0
+"#;
+
+/// What `covenant serve --allow-unenforced` builds from `ODCS_PARTIAL`.
+fn partial_app() -> axum::Router {
+    let loaded = Contract::load(ODCS_PARTIAL, "<test>").unwrap();
+    assert_eq!(loaded.unenforced.len(), 1);
+    let compiled = CompiledContract::compile(&loaded.contract).unwrap();
+    router(Arc::new(AppState {
+        source: "<test>".into(),
+        model: compiled.resolve_model(None).unwrap().name.clone(),
+        doc: loaded.contract,
+        compiled,
+        unenforced: loaded.unenforced,
+        dlq_path: None,
+        gate_stats_path: None,
     }))
 }
 
@@ -128,6 +166,89 @@ async fn check_returns_a_full_report() {
         .collect();
     assert!(rules.contains(&"unique") && rules.contains(&"min") && rules.contains(&"allowed"));
     assert!(j["samples"].as_array().unwrap().len() >= 3);
+}
+
+#[tokio::test]
+async fn a_fully_enforced_check_carries_no_unenforced_list() {
+    let resp = app()
+        .oneshot(
+            Request::post("/v1/check")
+                .body(Body::from("{\"order_id\":\"ord_ab12\",\"amount\":10}\n"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let j = body_json(resp).await;
+    assert!(j.get("unenforced").is_none(), "{j}");
+}
+
+#[tokio::test]
+async fn a_server_running_without_some_rules_marks_every_check_partial() {
+    let resp = partial_app()
+        .oneshot(
+            Request::post("/v1/check")
+                .body(Body::from("{\"order_id\":\"a\",\"amount\":-1}\n"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let j = body_json(resp).await;
+    assert_eq!(j["violations"], 1, "the enforced rules still run: {j}");
+    let unenforced = j["unenforced"]
+        .as_array()
+        .expect("a partial report lists them");
+    assert_eq!(unenforced.len(), 1);
+    assert_eq!(
+        unenforced[0]["path"],
+        "schema.orders.properties.amount.quality[0]"
+    );
+
+    let resp = partial_app()
+        .oneshot(Request::get("/v1/contract").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let j = body_json(resp).await;
+    assert_eq!(j["unenforced"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn validate_reads_odcs_and_reports_what_it_cannot_enforce() {
+    let resp = app()
+        .oneshot(
+            Request::post("/v1/validate")
+                .body(Body::from(ODCS_PARTIAL))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let j = body_json(resp).await;
+    assert_eq!(j["enforceable"], false);
+    let errors: Vec<&str> = j["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|f| f["level"] == "error")
+        .map(|f| f["path"].as_str().unwrap())
+        .collect();
+    assert_eq!(errors, vec!["schema.orders.properties.amount.quality[0]"]);
+
+    let enforceable = ODCS_PARTIAL.replace(
+        "        quality:\n          - type: sql\n            query: SELECT COUNT(*) FROM orders WHERE amount > 1000000\n            mustBe: 0\n",
+        "",
+    );
+    assert_ne!(enforceable, ODCS_PARTIAL);
+    let resp = app()
+        .oneshot(
+            Request::post("/v1/validate")
+                .body(Body::from(enforceable))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let j = body_json(resp).await;
+    assert_eq!(j["enforceable"], true, "{j}");
 }
 
 #[tokio::test]

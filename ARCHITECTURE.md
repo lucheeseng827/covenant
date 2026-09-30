@@ -109,7 +109,7 @@ a missing value and a null are the same validity bit. The mapping:
 
 | Contract field | JSON record | Arrow column |
 |---|---|---|
-| `required` + column/key missing | `required_missing` per row | `schema_missing_field` (batch-level) |
+| `required` + column/key missing | `required_missing` per row | `schema_missing_field` (once per source) |
 | optional + missing | passes | column absent → passes |
 | `required`, not `nullable`, value null | `null_not_allowed` | `null_not_allowed` per row |
 | optional, not `nullable`, value null | `null_not_allowed` (an explicit null was *sent*) | **passes** — indistinguishable from absent |
@@ -126,6 +126,15 @@ samples** (`policy.sample_violations`, default 10). The columnar engine uses
 its formatted message — is only constructed while the cap has room; a
 million-row disaster costs a counter bump per violation, not a string. Exit
 codes compare the exact total against `policy.max_violations`.
+
+A schema-level violation — a required column missing, a column of the wrong
+type (or of a type a declared constraint cannot be evaluated on, such as
+`allowed` on a native timestamp), an undeclared column in a strict model — is a
+fact about the source's schema, not about its rows, so the columnar engine
+counts it once per source however the reader splits the source into batches
+(`SchemaFindings` carries what earlier batches reported). Otherwise the count,
+and under a budget the verdict, would depend on the batch size: a Parquet file
+read in three batches would report a missing column three times.
 
 Uniqueness is exact and in-memory (`engine::UniqueTracker`, a per-field
 `HashSet` of canonical value renderings), shared across batches so
@@ -168,18 +177,108 @@ Records larger than ~16 MiB are dead-lettered unparsed (truncated preview)
 rather than buffered without bound — the gate must not be the component that
 gets OOM-killed. The DLQ file is opened in append mode: a rerun never
 destroys the previous run's dead letters. Piped between `kcat -C` and `kcat -P` it is a Kafka SMT; reading a
-dump in a CronJob it is a warehouse pre-load hook. A native Kafka
-consumer/producer mode (librdkafka behind an off-by-default feature) is
-roadmap, not prerequisite — the workspace build stays free of C toolchains.
+dump in a CronJob it is a warehouse pre-load hook.
+
+Every way a record reaches a gate gets its verdict from one place:
+`gate::RecordGate` judges one record at a time and keeps what spans the
+stream (unique keys, row numbers, counts, the violation budget). The line
+loop above, subprocess mode and the Kafka gate below are transports around
+it, so none of them can judge a record differently.
+
+`gate::run_as_subprocess` (`covenant gate --subprocess`) is the same loop for
+a stream processor that runs the gate as a subprocess: every line in gets
+exactly one line back, flushed at once — the record on stdout, or its
+envelope on stderr when it is withheld — which is how Redpanda Connect's
+`subprocess` processor tells a replaced message from a failed one. Its state
+(uniqueness, row numbers) lives as long as the process does.
+
+`kafka::run` (`covenant gate --brokers …`, the off-by-default `kafka`
+feature) is the gate reading and writing topics itself, over librdkafka's
+synchronous consumer and producer — still no async runtime. Its one hard
+property is at-least-once: an offset is committed only after `settle` has
+waited for the brokers to acknowledge everything produced for the records
+before it (and flushed a file DLQ), and a delivery that fails stops the gate
+without committing. `settle` runs every `--commit-interval-ms`, at the end,
+and inside the consumer's revoke callback, so a partition moves to another
+gate exactly where this one stopped: a test that rebalances two gates with
+the periodic commit disabled finds every record exactly once, and finds
+duplicates when the revoke-time settle is taken out. Within one run the gate
+remembers the next offset per partition and does not judge a record twice, so
+a partition handed back after a failed commit cannot convict its own `unique`
+keys. Tombstones (no value) pass unjudged, since a delete is not a record the
+contract describes.
+
+The crates under `integrations/` put `RecordGate` inside someone else's
+runtime, each as a standalone workspace so the engine never links their SDKs.
+The Redpanda Data Transform runs it as WebAssembly in the broker. There the
+broker owns delivery and offsets, and state lives per partition instance and
+ends with it. `unique` therefore cannot span a topic, and the build refuses
+a model that declares it unless `COVENANT_NO_UNIQUE=1` says to skip it. The
+contract is compiled in by `build.rs` with the engine itself, so an
+unenforceable contract fails the build instead of a broker.
+
+The JVM gets the engine the same way, as WebAssembly, so no native code
+ships. `integrations/jvm/embed` exports `RecordGate` through a C ABI
+(`covenant_open`, `covenant_judge`, `covenant_dead_letter`, …). One instance
+holds one gate, which keeps the ABI free of handles and of `unsafe` lifetime
+tricks: the contract is leaked into the instance and reclaimed with it.
+Chicory compiles the module to JVM bytecode once per class loader. The Kafka
+Connect transformation turns a blocked record into a `DataException`
+carrying the dead letter, which hands the record to Connect's own error
+handling and dead letter queue instead of reinventing them.
+
+The Kroxylicious filter is the only place the gate refuses a record to its
+producer. It works per partition batch, the unit a broker accepts or refuses.
+Partitions that pass are forwarded. A partition with a broken record is taken
+out and answered with `INVALID_RECORD` and a record error per broken record,
+merged into the broker's response by correlation id, or returned alone when
+nothing is left to forward. Refusing at the proxy looks to the producer
+exactly like a broker's own validation failure, so an idempotent producer
+recovers as it would from that.
+
+The Arroyo UDFs are the purest embedding: a function of one record. Each
+call builds a fresh `RecordGate` over a contract compiled once per process,
+so a verdict depends on the record alone. `unique`, which needs memory
+across records, is refused unless the UDF was rendered to skip it. They
+link the engine without its `arrow` feature. The UDF plugin Arroyo compiles
+against is built on Arrow 51, whose chrono cannot coexist with Arrow 58's.
+
+## Profiles: the verdict's memory
+
+A profile (`covenant check --profile`) is collected in the check's own read,
+never in a second pass. For NDJSON, `engine::row::validate_record_observed`
+hands the profiler each value the validator looks up, so profiling costs no
+extra map lookup, and with a no-op observer it compiles to the plain
+validator. For Arrow batches, the profiler walks each column of the batch the
+validator just saw, in type-specialized loops with the sketches held in
+locals.
+
+Two properties shaped the sketches (`src/sketch.rs`). **Order-free:**
+quantiles come from a log-bucketed histogram (a value's bucket is its
+float's top 18 bits), not a rank sketch like KLL, whose result depends on
+arrival order. So merges are exact, and a file profiles the same whatever its
+format or batching. **Stable:** distinct counts are HyperLogLog over fixed
+hash functions (`sketch::hash64`, `sketch::mix64`), not `std`'s hashers, so a
+profile written today merges with one written on another machine or by
+another release. Tests pin both.
+
+Drift (`drift::drift`) is arithmetic over two profiles: each metric is one
+number against one threshold, with minimum sample sizes, so a small run is
+listed as "not compared" rather than judged on noise.
 
 ## Dependency posture
 
 Lean dependency rules: the arrow/parquet **58** line is shared with the rest
 of the toolchain rather than pinned separately, so the columnar
-engine adds no new dependency line; everything else is small pure-Rust
+engine adds no new dependency line. It is also the `arrow` feature (default):
+a row-only embedder builds without it and links no Arrow, which matters to
+the stream-processor plugins, whose hosts pin their own Arrow; everything else is small pure-Rust
 (serde/regex/semver/chrono/indexmap). No async runtime — every enforcement
 point is a synchronous loop, which is exactly what CI steps and pipe
-interceptors want.
+interceptors want. The two C dependencies sit behind off-by-default features
+so the default build needs no C toolchain: `kafka` builds librdkafka (with
+vendored OpenSSL and zstd) from source, and the default build never compiles
+it.
 
 ## Known limits (v0.1)
 
@@ -189,4 +288,5 @@ interceptors want.
   dotted-path addressing is roadmap).
 - `unique` in gate mode is memory-unbounded (exact); `--no-unique` opts out.
 - No freshness/SLA checks — they need a clock and state, which belongs to
-  a stateful control layer, not the inline runtime.
+  a stateful control layer, not the inline runtime. Profiles record each
+  timestamp field's range, which such a check will read.

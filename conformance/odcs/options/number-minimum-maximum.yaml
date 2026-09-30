@@ -1,0 +1,27 @@
+vector: 1
+id: options/number-minimum-maximum
+standard: ODCS v3.1.0
+cites: "schema.md: logicalTypeOptions.minimum, maximum"
+description: "Inclusive bounds on a number."
+contract: |
+  apiVersion: v3.1.0
+  kind: DataContract
+  id: vector
+  version: 1.0.0
+  schema:
+    - name: t
+      properties:
+        - name: v
+          logicalType: number
+          logicalTypeOptions:
+            minimum: 0.5
+            maximum: 1.5
+records:
+  - { v: 0.5 }
+  - { v: 1.5 }
+  - { v: 0.49 }
+  - { v: 1.51 }
+  - { v: 1 }
+expect:
+  verdict: fail
+  failing: [2, 3]

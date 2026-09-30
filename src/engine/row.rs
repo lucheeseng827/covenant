@@ -8,7 +8,7 @@
 use serde_json::Value;
 
 use crate::compile::{shape, CompiledField, CompiledModel};
-use crate::report::{preview, truncate, Rule, Violation};
+use crate::report::{preview, truncate, Observed, Rule, Violation};
 use crate::spec::FieldType;
 
 use super::UniqueTracker;
@@ -22,6 +22,21 @@ pub fn validate_record(
     unique: Option<&mut UniqueTracker>,
     out: &mut Vec<Violation>,
 ) -> bool {
+    validate_record_observed(model, record, row, unique, out, |_, _| {})
+}
+
+/// [`validate_record`], also handing `observe` each contract field's value
+/// (by field index; `None` when absent) as validation looks it up — so a
+/// profile of the record costs no second lookup. Not called for a record
+/// that is not a JSON object.
+pub fn validate_record_observed(
+    model: &CompiledModel,
+    record: &Value,
+    row: u64,
+    unique: Option<&mut UniqueTracker>,
+    out: &mut Vec<Violation>,
+    mut observe: impl FnMut(usize, Option<&Value>),
+) -> bool {
     let before = out.len();
     let Some(obj) = record.as_object() else {
         out.push(Violation {
@@ -31,6 +46,7 @@ pub fn validate_record(
             row: Some(row),
             value: Some(preview(record)),
             message: format!("row {row}: record is not a JSON object"),
+            observed: Some(Observed::json(record)),
         });
         return false;
     };
@@ -38,7 +54,9 @@ pub fn validate_record(
     // Field-level checks in contract order.
     let mut unique = unique;
     for (idx, field) in model.fields.iter().enumerate() {
-        match obj.get(&field.name) {
+        let got = obj.get(&field.name);
+        observe(idx, got);
+        match got {
             None => {
                 if field.required {
                     out.push(violation(
@@ -48,6 +66,7 @@ pub fn validate_record(
                         row,
                         None,
                         format!("row {row}: required field {:?} is missing", field.name),
+                        None,
                     ));
                 }
             }
@@ -63,6 +82,7 @@ pub fn validate_record(
                             "row {row}: field {:?} is null but the contract forbids null",
                             field.name
                         ),
+                        Some(Observed::null()),
                     ));
                 }
             }
@@ -87,6 +107,7 @@ pub fn validate_record(
                                         field.name,
                                         preview(value)
                                     ),
+                                    Some(Observed::json(value)),
                                 ));
                             }
                         }
@@ -98,7 +119,7 @@ pub fn validate_record(
 
     // Closed-world check.
     if model.strict {
-        for key in obj.keys() {
+        for (key, value) in obj {
             if !model.field_index.contains_key(key) {
                 out.push(Violation {
                     model: model.name.clone(),
@@ -109,6 +130,7 @@ pub fn validate_record(
                     message: format!(
                         "row {row}: field {key:?} is not declared in the contract (strict model)"
                     ),
+                    observed: Some(Observed::json(value)),
                 });
             }
         }
@@ -254,6 +276,7 @@ fn check_stringly(
                     field.name,
                     preview(value)
                 ),
+                Some(Observed::string(s)),
             ));
             false
         }
@@ -284,6 +307,7 @@ fn check_string_constraints(
                     "row {row}: field {:?} length {len} is below min_length {lo}",
                     field.name
                 ),
+                Some(Observed::string(s)),
             ));
         }
     }
@@ -299,6 +323,7 @@ fn check_string_constraints(
                     "row {row}: field {:?} length {len} exceeds max_length {hi}",
                     field.name
                 ),
+                Some(Observed::string(s)),
             ));
         }
     }
@@ -316,6 +341,7 @@ fn check_string_constraints(
                     truncate(s, 64),
                     field.pattern_src.as_deref().unwrap_or("")
                 ),
+                Some(Observed::string(s)),
             ));
         }
     }
@@ -333,6 +359,7 @@ fn check_string_constraints(
                     truncate(s, 64),
                     fmt.name()
                 ),
+                Some(Observed::string(s)),
             ));
         }
     }
@@ -350,6 +377,7 @@ fn check_string_constraints(
                     truncate(s, 64),
                     allowed.describe()
                 ),
+                Some(Observed::string(s)),
             ));
         }
     }
@@ -376,6 +404,7 @@ fn check_integer_constraints(
                     "row {row}: field {:?} value {n} is below min {min}",
                     field.name
                 ),
+                Some(Observed::json(value)),
             ));
         }
     }
@@ -391,6 +420,7 @@ fn check_integer_constraints(
                     "row {row}: field {:?} value {n} exceeds max {max}",
                     field.name
                 ),
+                Some(Observed::json(value)),
             ));
         }
     }
@@ -416,6 +446,7 @@ fn check_numeric_constraints(
                     "row {row}: field {:?} value {n} is below min {min}",
                     field.name
                 ),
+                Some(Observed::json(value)),
             ));
         }
     }
@@ -431,6 +462,7 @@ fn check_numeric_constraints(
                     "row {row}: field {:?} value {n} exceeds max {max}",
                     field.name
                 ),
+                Some(Observed::json(value)),
             ));
         }
     }
@@ -455,6 +487,7 @@ fn push_type_mismatch(
             field.ty.name(),
             json_type_name(value)
         ),
+        Some(Observed::json(value)),
     ));
 }
 
@@ -478,6 +511,7 @@ fn push_allowed(
             preview(value),
             allowed.describe()
         ),
+        Some(Observed::json(value)),
     ));
 }
 
@@ -488,6 +522,7 @@ fn violation(
     row: u64,
     value: Option<String>,
     message: String,
+    observed: Option<Observed>,
 ) -> Violation {
     Violation {
         model: model.name.clone(),
@@ -496,6 +531,7 @@ fn violation(
         row: Some(row),
         value,
         message,
+        observed,
     }
 }
 

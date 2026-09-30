@@ -1,0 +1,25 @@
+vector: 1
+id: types/integer-values
+standard: ODCS v3.1.0
+cites: "schema.md: logicalType"
+description: "An integer property holds whole numbers; a fraction or a numeric string is not an integer."
+note: "Whether a JSON 5.0 is an integer is left out: see the questions in CONFORMANCE.md."
+contract: |
+  apiVersion: v3.1.0
+  kind: DataContract
+  id: vector
+  version: 1.0.0
+  schema:
+    - name: t
+      properties:
+        - name: v
+          logicalType: integer
+records:
+  - { v: 5 }
+  - { v: -3 }
+  - { v: 5.5 }
+  - { v: "5" }
+  - { v: null }
+expect:
+  verdict: fail
+  failing: [2, 3]

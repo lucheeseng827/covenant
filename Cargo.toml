@@ -8,20 +8,22 @@ strip = true
 panic = "unwind"
 
 [package]
-name = "covenant"
-version = "0.1.0"
+name = "covenant-data"
+version = "0.2.0"
 edition = "2021"
+# Minimum supported Rust: arrow/parquet 58 and clap 4.6 require 1.85. CI's `msrv`
+# job reads this line and builds with exactly this toolchain, so it cannot drift.
+rust-version = "1.85"
 license = "Apache-2.0"
 description = "Data-contract enforcement runtime: one compiled contract, run at every boundary the data crosses. `covenant check` gates files in CI (NDJSON/CSV/Parquet), `covenant gate` is a stdin-to-stdout stream interceptor with dead-letter envelopes, `covenant diff` classifies contract changes as breaking/risky/info with producer/consumer impact and enforces the semver bump, and the Arrow RecordBatch validator embeds in-process. A single static binary."
 homepage = "https://github.com/lucheeseng827/covenant"
-documentation = "https://docs.rs/covenant"
 readme = "README.md"
 keywords = ["data-contract", "validation", "arrow", "parquet", "data-quality"]
 categories = ["command-line-utilities", "data-structures", "development-tools"]
 # Keep the published crate lean: tests, examples and the console source are not
 # needed to build or use the library. frontend/dist IS shipped — the `serve`
 # feature embeds it with rust_embed, and a `cargo install` cannot run npm.
-exclude = ["tests/", "examples/", "frontend/src/", "frontend/node_modules/", "frontend/package*.json", "frontend/tsconfig.json", "frontend/vite.config.ts"]
+exclude = ["tests/", "examples/", "integrations/", "frontend/src/", "frontend/node_modules/", "frontend/package*.json", "frontend/tsconfig.json", "frontend/vite.config.ts"]
 repository = "https://github.com/lucheeseng827/covenant"
 publish = true
 
@@ -45,9 +47,10 @@ path = "src/main.rs"
 # Dependency posture (lean by default): arrow/parquet ride a single shared 58
 # line rather than a separately pinned one, so the Arrow batch
 # validator costs the workspace nothing new. A real Kafka client (librdkafka: cmake +
-# C toolchain) is deliberately NOT a dependency — the stream enforcement point is the
+# C toolchain) is NOT in the default build — the stream enforcement point is the
 # transport-agnostic `covenant gate` stdin/stdout interceptor (kcat/kafka-console-*
-# pipe it into any topic today); a native `kafka` feature is a roadmap item.
+# pipe it into any topic) — but the opt-in `kafka` feature below links one, for a
+# gate that reads and writes topics itself.
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
@@ -60,14 +63,24 @@ indexmap = { version = "2", features = ["serde"] }
 regex = "1"
 thiserror = "2"
 semver = "1"                                         # contract version parse + diff bump enforcement
-chrono = { version = "0.4", default-features = false, features = ["std"] }  # timestamp/date value validation
+# timestamp/date validation, and `now` for dead-letter stamps: asked for here, not
+# left to the Arrow crates to switch on
+chrono = { version = "0.4.35", default-features = false, features = ["std", "now"] }
+# A report's samples never carry a value. They carry a SHA-256 digest of it only in
+# memory, and a document that asks for hashes gets an HMAC of that digest under the
+# user's key: equal bad values compare equal, and no key means no hash.
+sha2 = "0.10"
+hmac = "0.12"
 
-# --- Arrow batch validator (DEFAULT — it is the differentiator, and the 58 line is
-# on the shared arrow line, so this pulls nothing new) -------------------------------
-arrow-array = "58"
-arrow-schema = "58"
-arrow-csv = "58"                                     # CSV → RecordBatch, so CSV checks reuse the Arrow engine
-parquet = { version = "58", default-features = false, features = ["arrow", "snap"] }
+# --- `arrow`: the Arrow batch validator and the CSV/Parquet readers (DEFAULT — it is
+# the differentiator, and the 58 line is on the shared arrow line, so this pulls
+# nothing new). `default-features = false` leaves the row engine alone: an embedder
+# that judges JSON records (a stream processor's plugin, a WebAssembly module) links
+# no Arrow, and no Arrow version constraint. ----------------------------------------
+arrow-array = { version = "58", optional = true }
+arrow-schema = { version = "58", optional = true }
+arrow-csv = { version = "58", optional = true }      # CSV → RecordBatch, so CSV checks reuse the Arrow engine
+parquet = { version = "58", default-features = false, features = ["arrow", "snap"], optional = true }
 
 # --- `serve` (OFF by default — the default build stays a lean sync binary) ---
 # The localhost console (site/console.html, embedded) + the /v1 JSON API.
@@ -81,10 +94,33 @@ tokio = { version = "1", features = ["rt-multi-thread"], optional = true }
 # committed so `cargo build --features serve` needs no Node toolchain.
 rust-embed = { version = "8", features = ["debug-embed"], optional = true }
 
+# --- `kafka` (OFF by default — librdkafka builds from source: cmake, a C compiler, perl) ---
+# `covenant gate --brokers … --from … --to …` consumes a topic, judges every record
+# and produces the ones that go on to another topic and dead letters to a third,
+# committing an offset only once the broker has acknowledged what it produced
+# (at-least-once). TLS (OpenSSL, vendored) and SASL PLAIN/SCRAM/OAUTHBEARER are
+# built in; gzip and zstd join the lz4 and snappy librdkafka carries itself.
+rdkafka = { version = "0.39", default-features = false, features = ["libz", "ssl-vendored", "zstd"], optional = true }
+signal-hook = { version = "0.4", optional = true }       # SIGINT/SIGTERM: settle, commit, then stop
+
 [features]
-default = []
+default = ["arrow", "send"]
+arrow = ["dep:arrow-array", "dep:arrow-schema", "dep:arrow-csv", "dep:parquet"]
 serve = ["dep:axum", "dep:tokio", "tokio/net", "tokio/macros", "dep:rust-embed"]
+kafka = ["dep:rdkafka", "dep:signal-hook"]
+# `covenant push` and `--report-to`: a report document POSTed over HTTPS (DEFAULT on,
+# except for WASI, which has no sockets). An embedder that sends nothing builds with
+# `default-features = false` and links no HTTP client.
+send = ["dep:ureq"]
+
+# --- `send` (DEFAULT) --- the HTTP client `covenant push`, `--report-to` and
+# `--openlineage` use: ureq 3 over rustls with the Mozilla roots compiled in, no
+# compression, nothing else (ureq 3 has no `url`/IDNA dependency, which keeps the
+# tree small and inside rust-version). Not for WASI, which has no sockets.
+[target.'cfg(not(target_os = "wasi"))'.dependencies]
+ureq = { version = "3", default-features = false, features = ["rustls"], optional = true }
 
 [dev-dependencies]
 tempfile = "3"                                       # throwaway parquet/csv/ndjson fixtures in tests
+jsonschema = { version = "0.46", default-features = false }  # report documents held to schema/covenant-report.v1.json
 tower = { version = "0.5", features = ["util"] }     # ServiceExt::oneshot — drive the serve router in tests, no socket

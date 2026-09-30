@@ -1,0 +1,23 @@
+vector: 1
+id: properties/primary-key-duplicate-fails
+standard: ODCS v3.1.0
+cites: "schema.md: primaryKey"
+description: "A primary key holds no value twice."
+note: "Which record an engine names for a duplicate varies, so only the verdict is pinned."
+contract: |
+  apiVersion: v3.1.0
+  kind: DataContract
+  id: vector
+  version: 1.0.0
+  schema:
+    - name: t
+      properties:
+        - name: v
+          logicalType: integer
+          primaryKey: true
+records:
+  - { v: 1 }
+  - { v: 2 }
+  - { v: 1 }
+expect:
+  verdict: fail

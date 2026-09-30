@@ -13,3 +13,11 @@ frontend/*.tsbuildinfo
 *.dlq.ndjson
 *-gate-stats.json
 .env
+# The playground's engine, copied beside it to serve it (js/README.md).
+/js/covenant.wasm
+# The stream-processor integrations build in their own directories.
+/integrations/**/target
+/integrations/redpanda-transform/*.wasm
+# `maturin develop` builds the extension into the package directory.
+/python/covenant_data/*.so
+/python/covenant_data/*.pyd

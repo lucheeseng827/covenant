@@ -1,0 +1,25 @@
+vector: 1
+id: quality/null-values-zero
+standard: ODCS v3.1.0
+cites: "data-quality.md: nullValues"
+description: "nullValues with mustBe: 0 fails any null."
+contract: |
+  apiVersion: v3.1.0
+  kind: DataContract
+  id: vector
+  version: 1.0.0
+  schema:
+    - name: t
+      properties:
+        - name: v
+          logicalType: integer
+          quality:
+            - metric: nullValues
+              mustBe: 0
+records:
+  - { v: 1 }
+  - { v: null }
+  - { v: 3 }
+expect:
+  verdict: fail
+  failing: [1]

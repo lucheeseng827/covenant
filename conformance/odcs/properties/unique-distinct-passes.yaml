@@ -1,0 +1,22 @@
+vector: 1
+id: properties/unique-distinct-passes
+standard: ODCS v3.1.0
+cites: "schema.md: unique"
+description: "unique: true passes a dataset of distinct values."
+contract: |
+  apiVersion: v3.1.0
+  kind: DataContract
+  id: vector
+  version: 1.0.0
+  schema:
+    - name: t
+      properties:
+        - name: v
+          logicalType: string
+          unique: true
+records:
+  - { v: "a" }
+  - { v: "b" }
+  - { v: "c" }
+expect:
+  verdict: pass

@@ -1,0 +1,24 @@
+vector: 1
+id: types/boolean-values
+standard: ODCS v3.1.0
+cites: "schema.md: logicalType"
+description: "A boolean property holds true or false; the string \"true\" and the number 1 are not booleans."
+contract: |
+  apiVersion: v3.1.0
+  kind: DataContract
+  id: vector
+  version: 1.0.0
+  schema:
+    - name: t
+      properties:
+        - name: v
+          logicalType: boolean
+records:
+  - { v: true }
+  - { v: false }
+  - { v: "true" }
+  - { v: 1 }
+  - { v: null }
+expect:
+  verdict: fail
+  failing: [2, 3]

@@ -1,0 +1,24 @@
+vector: 1
+id: options/integer-exclusive-minimum
+standard: ODCS v3.1.0
+cites: "schema.md: logicalTypeOptions.exclusiveMinimum"
+description: "exclusiveMinimum excludes the bound: values > exclusiveMinimum."
+contract: |
+  apiVersion: v3.1.0
+  kind: DataContract
+  id: vector
+  version: 1.0.0
+  schema:
+    - name: t
+      properties:
+        - name: v
+          logicalType: integer
+          logicalTypeOptions:
+            exclusiveMinimum: 0
+records:
+  - { v: 1 }
+  - { v: 0 }
+  - { v: -1 }
+expect:
+  verdict: fail
+  failing: [1, 2]

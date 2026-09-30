@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Covenant playground</title>
+<meta name="description" content="Check data against a data contract in the browser. The engine runs in the page; nothing is uploaded.">
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f6f6f4; --fg: #1d1f21; --muted: #5a5f64; --line: #d4d7da; --panel: #ffffff;
+    --pass: #1d7338; --fail: #b3261e; --error: #8a5a00; --accent: #b54f19; --on-accent: #ffffff;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #141719; --fg: #dce0e3; --muted: #9aa0a6; --line: #3a4046; --panel: #1b1f22;
+      --pass: #6fd08c; --fail: #ff8a80; --error: #e3b341; --accent: #ff8a33; --on-accent: #141719;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 74rem; margin: 0 auto; padding: 1.75rem 1rem 3rem; }
+  h1 { font-size: 1.65rem; line-height: 1.2; margin: 0 0 .35rem; }
+  .lede { margin: 0 0 1.5rem; color: var(--muted); max-width: 46rem; }
+  .grid { display: grid; gap: 1.25rem; grid-template-columns: minmax(0, 1fr); }
+  @media (min-width: 56rem) { .grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } }
+  label.field { display: block; font-weight: 600; margin-bottom: .4rem; }
+  textarea {
+    display: block; width: 100%; min-height: 19rem; resize: vertical; padding: .75rem;
+    border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--fg);
+    font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; tab-size: 2;
+  }
+  .row { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; margin-top: .6rem; }
+  button, select {
+    font: inherit; font-size: .95rem; padding: .45rem .85rem; border-radius: 6px;
+    border: 1px solid var(--line); background: var(--panel); color: var(--fg); cursor: pointer;
+  }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 650; }
+  button:disabled { opacity: .55; cursor: progress; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .spacer { flex: 1; }
+  #verdict { font-weight: 700; margin: 1.5rem 0 .6rem; min-height: 1.55em; }
+  #verdict.pass { color: var(--pass); }
+  #verdict.fail { color: var(--fail); }
+  #verdict.error { color: var(--error); }
+  pre {
+    margin: 0; padding: 1rem; min-height: 4rem; overflow-x: auto; white-space: pre-wrap; overflow-wrap: anywhere;
+    border: 1px solid var(--line); border-radius: 6px; background: var(--panel);
+    font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  .note { color: var(--muted); font-size: .9rem; margin-top: 1rem; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .92em; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Covenant playground</h1>
+  <p class="lede">Paste a data contract, either <code>covenant: 1</code> or ODCS v3, and some data, then check
+    the one against the other. The engine runs in this page, so nothing you paste is uploaded.</p>
+
+  <div class="grid">
+    <section>
+      <label class="field" for="contract">Contract</label>
+      <textarea id="contract" spellcheck="false" autocomplete="off"></textarea>
+      <div class="row">
+        <button type="button" data-sample="covenant">Covenant sample</button>
+        <button type="button" data-sample="odcs">ODCS sample</button>
+      </div>
+    </section>
+    <section>
+      <label class="field" for="data">Data</label>
+      <textarea id="data" spellcheck="false" autocomplete="off"></textarea>
+      <div class="row">
+        <label for="format">Format</label>
+        <select id="format">
+          <option value="csv">CSV</option>
+          <option value="ndjson">NDJSON</option>
+        </select>
+        <span class="spacer"></span>
+        <button type="button" id="check" class="primary" disabled>Check</button>
+      </div>
+    </section>
+  </div>
+
+  <p id="verdict" role="status" aria-live="polite">Loading the engine…</p>
+  <pre id="output" aria-label="Report"></pre>
+  <p class="note">This is <code>covenant check</code>, the command CI runs, built for WebAssembly:
+    <code>covenant.mjs</code> runs <code>covenant.wasm</code> over an in-memory filesystem.</p>
+</main>
+
+<script type="module">
+  import { load } from "./covenant.mjs";
+
+  const samples = {
+    covenant: `covenant: 1
+id: orders
+version: 1.0.0
+models:
+  orders:
+    strict: true
+    fields:
+      order_id:     { type: string, required: true, unique: true, pattern: "^ord_[a-z0-9]{12}$" }
+      amount_cents: { type: integer, required: true, min: 0 }
+      currency:     { type: string, required: true, allowed: [USD, EUR, GBP] }
+      created_at:   { type: timestamp, required: true }
+`,
+    odcs: `apiVersion: v3.1.0
+kind: DataContract
+id: orders
+version: 1.0.0
+schema:
+  - name: orders
+    properties:
+      - name: order_id
+        logicalType: string
+        required: true
+        unique: true
+        logicalTypeOptions:
+          pattern: "^ord_[a-z0-9]{12}$"
+      - name: amount_cents
+        logicalType: integer
+        required: true
+        logicalTypeOptions:
+          minimum: 0
+      - name: currency
+        logicalType: string
+        required: true
+        quality:
+          - metric: invalidValues
+            arguments:
+              validValues: [USD, EUR, GBP]
+            mustBe: 0
+      - name: created_at
+        logicalType: timestamp
+        required: true
+`,
+  };
+  const csv = `order_id,amount_cents,currency,created_at
+ord_a1b2c3d4e5f6,12999,USD,2026-08-11T09:30:00Z
+ORD-UPPERCASE,-50,BTC,2026-08-11T09:31:00Z
+ord_a1b2c3d4e5f6,100,USD,yesterday
+`;
+
+  const $ = (id) => document.getElementById(id);
+  const verdict = (text, kind = "") => {
+    $("verdict").textContent = text;
+    $("verdict").className = kind;
+  };
+
+  function sample(name) {
+    $("contract").value = samples[name];
+    $("data").value = csv;
+    $("format").value = "csv";
+  }
+  for (const button of document.querySelectorAll("[data-sample]")) {
+    button.addEventListener("click", () => sample(button.dataset.sample));
+  }
+  sample("covenant");
+
+  let covenant;
+  try {
+    covenant = await load(new URL("./covenant.wasm", import.meta.url));
+    $("check").disabled = false;
+    verdict("Ready.");
+  } catch (e) {
+    verdict(`The engine did not load: ${e.message}`, "error");
+  }
+
+  $("check").addEventListener("click", async () => {
+    const data = `data.${$("format").value}`;
+    $("check").disabled = true;
+    try {
+      const run = await covenant.run(["check", data, "--contract", "contract.yaml"], {
+        files: { "contract.yaml": $("contract").value, [data]: $("data").value },
+      });
+      if (run.code === 0) verdict("Exit 0: the data keeps the contract.", "pass");
+      else if (run.code === 1) verdict("Exit 1: the data breaks the contract.", "fail");
+      else verdict(`Exit ${run.code}: the check could not run.`, "error");
+      $("output").textContent = run.code === 0 || run.code === 1 ? run.stdout : run.stderr;
+    } catch (e) {
+      verdict(`The engine stopped: ${e.message}`, "error");
+      $("output").textContent = e.stderr ?? "";
+    } finally {
+      $("check").disabled = false;
+    }
+  });
+</script>
+</body>
+</html>

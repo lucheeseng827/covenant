@@ -3,6 +3,9 @@
 //! and accept the very data it was drafted from. Everything else here is
 //! about honesty — a draft may not promise something the sample cannot
 //! support.
+// Arrow fixtures (Parquet files, RecordBatches) throughout: this suite runs
+// in every build with the `arrow` feature, which is on by default.
+#![cfg(feature = "arrow")]
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

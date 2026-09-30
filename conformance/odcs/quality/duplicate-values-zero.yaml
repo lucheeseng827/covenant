@@ -1,0 +1,25 @@
+vector: 1
+id: quality/duplicate-values-zero
+standard: ODCS v3.1.0
+cites: "data-quality.md: duplicateValues (property)"
+description: "duplicateValues with mustBe: 0 fails a repeated value."
+note: "Which record an engine names for a duplicate varies, so only the verdict is pinned."
+contract: |
+  apiVersion: v3.1.0
+  kind: DataContract
+  id: vector
+  version: 1.0.0
+  schema:
+    - name: t
+      properties:
+        - name: v
+          logicalType: string
+          quality:
+            - metric: duplicateValues
+              mustBe: 0
+records:
+  - { v: "a" }
+  - { v: "b" }
+  - { v: "a" }
+expect:
+  verdict: fail

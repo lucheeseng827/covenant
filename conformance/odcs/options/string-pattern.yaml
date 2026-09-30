@@ -1,0 +1,27 @@
+vector: 1
+id: options/string-pattern
+standard: ODCS v3.1.0
+cites: "schema.md: logicalTypeOptions.pattern"
+description: "An anchored pattern: the whole value must match."
+note: "Unanchored patterns are left out: see the questions in CONFORMANCE.md."
+contract: |
+  apiVersion: v3.1.0
+  kind: DataContract
+  id: vector
+  version: 1.0.0
+  schema:
+    - name: t
+      properties:
+        - name: v
+          logicalType: string
+          logicalTypeOptions:
+            pattern: "^[A-Z]{2}[0-9]{2}$"
+records:
+  - { v: "AB12" }
+  - { v: "ab12" }
+  - { v: "AB123" }
+  - { v: "XAB12" }
+  - { v: null }
+expect:
+  verdict: fail
+  failing: [1, 2, 3]

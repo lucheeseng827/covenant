@@ -1,0 +1,28 @@
+# The gate for WebAssembly hosts: a reactor module (wasm32-wasip1) that
+# exports the gate through a small C ABI, so a runtime such as Chicory on the
+# JVM can run Covenant without native code. A standalone workspace with its
+# own lock, like the other integrations.
+[workspace]
+
+[package]
+name = "covenant-embed"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "Apache-2.0"
+publish = true
+description = "The Covenant gate as a WebAssembly reactor module with a C ABI, for embedding in WebAssembly hosts such as the JVM."
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+covenant = { package = "covenant-data", path = "../../..", default-features = false }
+serde_json = "1"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

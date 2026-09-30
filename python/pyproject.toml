@@ -1,0 +1,37 @@
+# The `covenant-data` wheel, imported as `covenant_data`. One stable-ABI (abi3)
+# wheel covers CPython 3.9+, and it carries the `covenant` command too.
+#
+#   pip install maturin
+#   maturin build --release        # -> target/wheels/covenant_data-*-abi3-*.whl
+#   maturin develop                # into the active virtualenv, for tests
+#
+# The `extension-module` feature is what links pyo3; a bare `cargo build` of
+# this crate never selects it, so it never needs Python.
+[build-system]
+requires = ["maturin>=1.5,<2"]
+build-backend = "maturin"
+
+[project]
+name = "covenant-data"
+description = "Data contracts enforced where the data flows: check polars, pyarrow and DuckDB frames, records and files against a contract (covenant or ODCS v3)."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "Apache-2.0" }
+keywords = ["data-contract", "odcs", "data-quality", "arrow", "polars"]
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "License :: OSI Approved :: Apache Software License",
+    "Topic :: Database",
+]
+dynamic = ["version"]
+
+[project.scripts]
+covenant = "covenant_data:main"
+
+[project.urls]
+Homepage = "https://github.com/lucheeseng827/covenant"
+
+[tool.maturin]
+features = ["extension-module"]
+module-name = "covenant_data._native"

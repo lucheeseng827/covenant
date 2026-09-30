@@ -1,0 +1,23 @@
+vector: 1
+id: quality/row-count
+standard: ODCS v3.1.0
+cites: "data-quality.md: rowCount"
+description: "rowCount with mustBeGreaterThan: 2 fails a dataset of two rows."
+contract: |
+  apiVersion: v3.1.0
+  kind: DataContract
+  id: vector
+  version: 1.0.0
+  schema:
+    - name: t
+      properties:
+        - name: v
+          logicalType: integer
+      quality:
+        - metric: rowCount
+          mustBeGreaterThan: 2
+records:
+  - { v: 1 }
+  - { v: 2 }
+expect:
+  verdict: fail
