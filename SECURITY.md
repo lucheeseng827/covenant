@@ -26,18 +26,43 @@ No advisories have been published.
 
 ## Releases
 
-The container image is built and pushed by `.github/workflows/release.yml` from a version
-tag, not on a maintainer's machine. From the first release after 0.1.0, every image it pushes
-is signed and carries build provenance, and there is no signing key for anyone to hold or leak:
+Every release is made by `.github/workflows/release.yml` from its version tag, not on a
+maintainer's machine: the binaries on its GitHub Release, the crate on crates.io, the Homebrew
+formula and the container image. Every image from 0.2.0 on, and every binary from the release
+after 0.2.0 on (the first to have binaries), is signed and carries build provenance, and there
+is no signing key for anyone to hold or leak:
 
-- **The signature is keyless.** Sigstore issues the release job a short-lived certificate for
-  its GitHub identity (this repository, that workflow file, that tag) and records the
-  signature in its public transparency log.
-- **The provenance** (SLSA) records which workflow built the image, and from which commit. It
-  is stored in this repository's attestations.
+- **The signatures are keyless.** Sigstore issues the release job a short-lived certificate for
+  its GitHub identity (this repository, that workflow file, that tag) and records each
+  signature in its public transparency log. An archive's signature is the Sigstore bundle
+  beside it on the release (`<archive>.sigstore.json`); the image's is in the registry.
+- **The provenance** (SLSA) records which workflow built each archive, the SBOM and the image,
+  and from which commit. It is stored in this repository's attestations.
+- **The SBOM**, `covenant.cdx.json` on each release (CycloneDX), lists everything the binaries
+  are built from.
 
-The release job runs these same checks before it reports success. To run them yourself on the
-version you pull:
+The release job runs these same checks before it publishes, and it publishes the GitHub Release
+once, with every file already in it. To run them yourself:
+
+**An archive from a release** (and its `.sigstore.json`, downloaded beside it):
+
+```bash
+V=x.y.z                                        # the release
+A=covenant-x86_64-unknown-linux-musl.tar.gz    # the archive
+cosign verify-blob "$A" --bundle "$A.sigstore.json" \
+  --certificate-identity "https://github.com/lucheeseng827/covenant/.github/workflows/release.yml@refs/tags/v$V" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+gh attestation verify "$A" --repo lucheeseng827/covenant \
+  --signer-workflow lucheeseng827/covenant/.github/workflows/release.yml --source-ref "refs/tags/v$V"
+```
+
+The bundles are in the format cosign 3 writes and reads. `SHA256SUMS` on the release lists every
+file's SHA-256. Homebrew checks each archive against the SHA-256 in the formula, which the
+release job writes from the release's own archives. `cargo binstall` downloads the same archives
+and checks no signature, so check the archive yourself when that matters; `cargo install` builds
+from the crate on crates.io.
+
+**The image:**
 
 ```bash
 V=x.y.z   # the release you run
@@ -48,11 +73,11 @@ gh attestation verify "oci://docker.io/mancube/covenant:$V" --repo lucheeseng827
   --signer-workflow lucheeseng827/covenant/.github/workflows/release.yml --source-ref "refs/tags/v$V"
 ```
 
-The first command proves the image was signed by the release workflow running on that tag; the
-second, that the same workflow built it from that tag. Every image on Docker Hub is published by
-a run on its release tag (a publish by hand has to be started on the tag too), so both commands
-hold for every release. `0.1.0` predates them and is unsigned: `cosign verify` reports "no
-signatures found" for it.
+In each pair, the first command proves the file or image was signed by the release workflow
+running on that tag; the second, that the same workflow built it from that tag. Everything a
+release publishes comes from a run on its tag (a release finished by hand has to be started on
+the tag too), so both hold for every release since. `0.1.0` and `0.2.0` have no binaries, and
+`0.1.0`'s image predates signing: `cosign verify` reports "no signatures found" for it.
 
 ## Scope notes
 

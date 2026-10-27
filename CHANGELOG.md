@@ -2,6 +2,42 @@
 
 ## Unreleased
 
+## 0.2.1 — 2026-10-27
+
+### Docker image: the quick start writes
+
+- The Docker Hub quick start's `infer --out` and `gate --dlq` failed with
+  `Permission denied` (exit 2) in any directory uid 65532 did not own, which is every
+  directory on a developer's machine or a CI runner. `docs/DOCKERHUB.md` now runs every
+  command as the mounted directory's owner (`-u "$(id -u):$(id -g)"`). The release's
+  image smoke test and `quickstart.sh` also exercise `infer --out`: both only read
+  before, which is how this shipped.
+
+### Binaries, crates.io and Homebrew
+
+- A release ships `covenant` for Linux x86_64 and aarch64 (static, musl), macOS arm64 and
+  x86_64, and Windows x86_64 on its GitHub Release, as `covenant-<target>.tar.gz` (`.zip` for
+  Windows): one directory holding the binary, `LICENSE` and `NOTICE`. Each is built on its own
+  platform and runs the README quickstart there before it is packaged.
+- Each archive is signed keylessly, like the image (a Sigstore bundle,
+  `<archive>.sigstore.json`, beside it), and carries build provenance; `covenant.cdx.json` is
+  the CycloneDX SBOM of what the binaries are built from, and `SHA256SUMS` lists every file.
+  The release job checks them all with the commands `SECURITY.md` gives, then publishes the
+  release once, with every file already in it. `rehearse` signs, attests and verifies the
+  binaries too, and publishes nothing.
+- The crate goes to crates.io as `covenant-data` (`cargo install covenant-data`; the command
+  and the library stay `covenant`), and `cargo binstall covenant-data` installs the release's
+  binary for the machine instead of compiling it.
+- The repository is a Homebrew tap: `brew tap lucheeseng827/covenant
+  https://github.com/lucheeseng827/covenant`, then `brew install lucheeseng827/covenant/covenant`.
+  Each release writes the formula from its own archives, and installs and tests it before
+  committing it.
+- A release ends by installing itself on fresh runners — `cargo install`, `cargo binstall`,
+  `brew install` and `docker run` — and running the quickstart with each. A pre-release is built
+  and published on GitHub and Docker Hub only.
+- A release tag must be the crate's version and have its section here, which becomes the
+  release's notes; a tag that is not, or has none, stops before anything is published.
+
 ## 0.2.0 — 2026-10-01
 
 ### The report: `covenant-report/v1`

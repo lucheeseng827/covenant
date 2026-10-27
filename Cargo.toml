@@ -9,7 +9,7 @@ panic = "unwind"
 
 [package]
 name = "covenant-data"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 # Minimum supported Rust: arrow/parquet 58 and clap 4.6 require 1.85. CI's `msrv`
 # job reads this line and builds with exactly this toolchain, so it cannot drift.
@@ -22,8 +22,10 @@ keywords = ["data-contract", "validation", "arrow", "parquet", "data-quality"]
 categories = ["command-line-utilities", "data-structures", "development-tools"]
 # Keep the published crate lean: tests, examples and the console source are not
 # needed to build or use the library. frontend/dist IS shipped — the `serve`
-# feature embeds it with rust_embed, and a `cargo install` cannot run npm.
-exclude = ["tests/", "examples/", "integrations/", "frontend/src/", "frontend/node_modules/", "frontend/package*.json", "frontend/tsconfig.json", "frontend/vite.config.ts"]
+# feature embeds it with rust_embed, and a `cargo install` cannot run npm. Nor
+# are the conformance vectors, the JS API, the image's Dockerfile or the
+# Homebrew formula the release workflow keeps in Formula/.
+exclude = ["tests/", "examples/", "integrations/", "frontend/src/", "frontend/node_modules/", "frontend/package*.json", "frontend/tsconfig.json", "frontend/vite.config.ts", "conformance/", "js/", "Dockerfile", "Formula/"]
 repository = "https://github.com/lucheeseng827/covenant"
 publish = true
 
@@ -34,6 +36,18 @@ path = "src/lib.rs"
 [[bin]]
 name = "covenant"
 path = "src/main.rs"
+
+# `cargo binstall covenant-data` reads this from the published crate and installs
+# the release's binary for the machine instead of compiling it: the archives the
+# release workflow attaches to the GitHub Release of each version (package.sh
+# names them), under `repository`. Inert until the crate is published.
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/covenant-{ target }{ archive-suffix }"
+bin-dir = "covenant-{ target }/{ bin }{ binary-ext }"
+pkg-fmt = "tgz"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-fmt = "zip"
 
 # --- Design note: enforcement engine first, registry later ---------------------------
 # The niche's whole complaint is that data-contract tools are "an honor system with a

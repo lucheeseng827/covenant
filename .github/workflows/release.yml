@@ -2,48 +2,76 @@
 #
 # Synced from the source repository as .github/workflows/release.yml. Edit it at
 # ops/release.yml in the source tree, not here on the mirror: the next sync
-# overwrites the mirror copy.
+# overwrites the mirror copy. The scripts it runs are synced beside it, to
+# .github/scripts/, and each runs by hand from the repository root too.
 #
-# Builds the multi-arch image, pushes it to Docker Hub, signs it and records how
-# it was built, then refreshes the Docker Hub repository overview from
-# docs/DOCKERHUB.md so the description never drifts from the release it documents.
+# A tag v<version> is one release, and this workflow makes all of it:
 #
-# This repository IS the standalone crate, so the build context is the repository
-# root and the Dockerfile works exactly as it does for anyone cloning.
+#   plan       the version, what this run may publish, and the checks that stop a
+#              release before anything is built: the tag is the crate's version, and
+#              CHANGELOG.md has its section (the release's notes)
+#   binaries   `covenant` for Linux x86_64 and aarch64 (static, musl), macOS arm64 and
+#              x86_64, and Windows x86_64, each built on its own platform, run there on
+#              the examples, and packaged (package.sh) with its LICENSE and NOTICE
+#   crate      the crate as crates.io would take it (`cargo publish --dry-run` builds it
+#              from its package alone), and the CycloneDX SBOM of what it is built from
+#   release    SHA256SUMS, the build provenance (SLSA) of every archive and the SBOM, a
+#              keyless signature of each archive (a Sigstore bundle beside it), the same
+#              checks SECURITY.md gives users, and then the GitHub Release: created as a
+#              draft with every file in it and published once, since an immutable
+#              release takes no file after it is published. It waits for the image job,
+#              so a release whose image job fails publishes nothing else
+#   crates-io  `cargo publish` of covenant-data, once per version
+#   homebrew   Formula/covenant.rb (formula.sh), installed and tested before it is
+#              committed to main: this repository is its own tap
+#   image      the multi-arch image, pushed to Docker Hub, signed, with provenance
+#   installs   `cargo install`, `cargo binstall`, `brew install` and `docker run` of the
+#              release on fresh runners, each running the README quickstart
+#              (quickstart.sh): the release works from a clean machine, or the run fails
 #
-# Signing holds no key. cosign signs the pushed digest KEYLESSLY: Sigstore issues a
-# short-lived certificate to this job's GitHub OIDC identity (this repository, this
-# workflow file, this ref) and records the signature in its public transparency
-# log. Only a run of this workflow here can make a signature that `cosign verify`
-# accepts for that identity, and every signature it ever made is on the record.
-# The build provenance (SLSA, from actions/attest-build-provenance) is stored in
-# this repository's attestations. Neither goes inside the image's index, which
-# stays a plain multi-arch manifest list. SECURITY.md gives the commands that check
-# both, and the job runs them itself before it reports success. The identity those
-# commands name is the release TAG, so a manual publish to Docker Hub must be
-# dispatched on that tag too: every image there is then signed by a run on its tag.
+# A pre-release (a version with a `-`) is built, signed and published on GitHub and
+# Docker Hub, but never claims `latest`, never goes to crates.io and never replaces the
+# formula.
 #
-# Keyless signing needs the OIDC token that only a real run of this job is given,
-# so nothing short of a run can test it. `rehearse` is that run without a release:
-# the same build, signature, attestation, verification and smoke test, pushed to
-# the throwaway registry ttl.sh (the image expires within the hour) instead of
-# Docker Hub.
+# Signing holds no key. cosign signs each archive and the pushed image KEYLESSLY:
+# Sigstore issues a short-lived certificate to the signing job's GitHub OIDC identity
+# (this repository, this workflow file, this ref) and records the signature in its
+# public transparency log. Only a run of this workflow here can make a signature that
+# `cosign verify` or `cosign verify-blob` accepts for that identity, and every signature
+# it ever made is on the record. The build provenance (SLSA, from
+# actions/attest-build-provenance) is stored in this repository's attestations; for the
+# image, neither goes inside its index, which stays a plain multi-arch manifest list.
+# SECURITY.md gives the commands that check both, and the jobs run them before they
+# report success. The identity those commands name is the release TAG, so a release
+# finished by hand must be dispatched on that tag too: everything published is then
+# signed by a run on its tag.
+#
+# Keyless signing needs the OIDC token that only a real run is given, so nothing short
+# of a run can test it. `rehearse` is that run without a release: the same builds,
+# signatures, attestations, verification and formula test, with the image pushed to the
+# throwaway registry ttl.sh (it expires within the hour) instead of Docker Hub, and
+# nothing published.
 #
 # Triggers:
-#   - push a tag `v*`                 -> build + push mancube/covenant:<version> + :latest, signed
-#   - manual run (workflow_dispatch)  -> build only (dry-run); set push=true to publish (run it
-#                                        on the tag v<version>), or rehearse=true to run the
-#                                        signing path on ttl.sh (from any branch)
+#   - push a tag `v*`                 -> the release, as above
+#   - manual run (workflow_dispatch)  -> a dry-run (build, package, test; nothing signed or
+#                                        published); push=true on the tag v<version> finishes
+#                                        a release, and rehearse=true (from any branch) takes
+#                                        every path that signs, without publishing
 #
 # Required secrets, as ENVIRONMENT secrets on the `cicd` environment of this
 # repository (Settings -> Environments -> cicd -> Environment secrets):
 #   DOCKER_USERNAME   the Docker Hub account that owns mancube/covenant
 #   DOCKER_PASSWORD   a Docker Hub access token with Read/Write on mancube/covenant
+#   CRATESIO_TOKEN    a crates.io API token that may publish covenant-data
 #
-# The job declares `environment: cicd` so those resolve. A fork has no such
-# environment, so they resolve empty there — and the run degrades to a build
-# without a push rather than failing, so a contributor is never blocked on
-# credentials they cannot have. A rehearsal needs none.
+# The jobs that use them declare `environment: cicd` so those resolve. A fork has no
+# such environment: its image run degrades to a build without a push rather than
+# failing, so a contributor is never blocked on credentials they cannot have, and the
+# crates.io, formula and install jobs run for this repository only. Here, a release
+# without the Docker Hub pair fails in the image job instead, before anything is
+# published. A rehearsal needs none. The GitHub Release and the formula's commit use the
+# job's own token.
 
 name: Release
 
@@ -53,14 +81,14 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Image version (e.g. 0.1.0)"
+        description: "The version (e.g. 0.2.0): the crate's, and the tag's without its v"
         required: true
       push:
-        description: "Push to Docker Hub (false = build only, a dry-run)"
+        description: "Publish: finish the release of this version (run it on the tag v<version>). False = a dry-run: build, package and test only"
         type: boolean
         default: false
       rehearse:
-        description: "Rehearse the signing path: push to ttl.sh (expires within 1h), then sign, attest and verify it. Never touches Docker Hub"
+        description: "Rehearse every path that signs: sign, attest and verify the binaries, test the formula, and push the image to ttl.sh (expires within 1h). Publishes nothing"
         type: boolean
         default: false
 
@@ -76,7 +104,505 @@ env:
   PLATFORMS: linux/amd64,linux/arm64
 
 jobs:
+  plan:
+    name: plan the release
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.plan.outputs.version }}
+      mode: ${{ steps.plan.outputs.mode }}
+      prerelease: ${{ steps.plan.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Resolve the version and what this run publishes
+        id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          DISPATCH_VERSION: ${{ inputs.version }}
+          DISPATCH_PUSH: ${{ inputs.push }}
+          DISPATCH_REHEARSE: ${{ inputs.rehearse }}
+          REF_NAME: ${{ github.ref_name }}
+          RUN_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          # release   a tag push, or a run dispatched with push on the tag, to finish one
+          # rehearse  everything that signs, attests and verifies; nothing published
+          # dry-run   build, package and test; nothing signed, nothing published
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            V="$DISPATCH_VERSION"
+            if [ "$DISPATCH_REHEARSE" = "true" ]; then MODE=rehearse
+            elif [ "$DISPATCH_PUSH" = "true" ]; then MODE=release
+            else MODE=dry-run; fi
+          else
+            V="${REF_NAME#v}"   # v0.2.0 -> 0.2.0
+            MODE=release
+          fi
+          if ! [[ "$V" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.+-]+)?$ ]]; then
+            echo "::error::invalid version: '$V'"; exit 1
+          fi
+          # What a release publishes is signed with the identity of the ref it runs on,
+          # and SECURITY.md tells users to expect the tag.
+          if [ "$MODE" = "release" ] && [ "$RUN_REF" != "refs/tags/v$V" ]; then
+            echo "::error::a release of $V runs on its tag v$V (this run is on $RUN_REF), so that what it publishes is signed with the identity SECURITY.md tells users to check. Dispatch it on the tag, or rehearse from a branch."
+            exit 1
+          fi
+          CRATE="$(grep -m1 -E '^version[[:space:]]*=' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')"
+          [ "$CRATE" = "$V" ] || { echo "::error::version '$V' != crate version '$CRATE'"; exit 1; }
+          # The release's notes are the CHANGELOG's section for its version.
+          if ! awk -v v="$V" '$1 == "##" && $2 == v { found = 1 } END { exit !found }' CHANGELOG.md; then
+            if [ "$MODE" = "release" ]; then
+              echo "::error::CHANGELOG.md has no '## $V' section, which is the release's notes"; exit 1
+            fi
+            echo "::warning::CHANGELOG.md has no '## $V' section yet: a release of $V would stop here"
+          fi
+          case "$V" in *-*) PRE="true" ;; *) PRE="false" ;; esac
+          {
+            echo "version=$V"
+            echo "mode=$MODE"
+            echo "prerelease=$PRE"
+          } >> "$GITHUB_OUTPUT"
+          echo "Version $V: $MODE$([ "$PRE" = "true" ] && echo ", a pre-release")"
+
+  binaries:
+    name: binary (${{ matrix.target }})
+    needs: plan
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        # Each target builds on its own platform, so each binary is run where it will
+        # be run before it is packaged.
+        include:
+          - { target: x86_64-unknown-linux-musl,  os: ubuntu-24.04 }
+          - { target: aarch64-unknown-linux-musl, os: ubuntu-24.04-arm }
+          - { target: aarch64-apple-darwin,       os: macos-15 }
+          - { target: x86_64-apple-darwin,        os: macos-15-intel }
+          - { target: x86_64-pc-windows-msvc,     os: windows-2022, exe: .exe }
+    defaults:
+      run:
+        shell: bash
+    env:
+      TARGET: ${{ matrix.target }}
+      V: ${{ needs.plan.outputs.version }}
+    steps:
+      # Windows' git would check the sources out with CRLF line endings, and the
+      # binary embeds some of them. Build what the other platforms build.
+      - name: Check out with the repository's own line endings
+        if: runner.os == 'Windows'
+        run: git config --global core.autocrlf false
+
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          targets: ${{ matrix.target }}
+
+      # ring (under rustls, which sends reports) compiles C for its target. For musl
+      # that is musl-gcc, which the cc crate finds for x86_64 but looks for as
+      # aarch64-linux-musl-gcc on aarch64, so it is named for both.
+      - name: The musl C toolchain
+        if: contains(matrix.target, 'musl')
+        run: |
+          set -euo pipefail
+          sudo apt-get update -q
+          sudo apt-get install -y -q musl-tools
+          echo "CC_${TARGET//-/_}=musl-gcc" >> "$GITHUB_ENV"
+
+      - name: Build
+        run: cargo build --release --locked --bin covenant --target "$TARGET"
+
+      - name: The Linux binary is static
+        if: contains(matrix.target, 'musl')
+        run: |
+          set -euo pipefail
+          info="$(file "target/$TARGET/release/covenant")"
+          echo "$info"
+          grep -Eq 'statically linked|static-pie linked' <<< "$info" || {
+            echo "::error::the $TARGET binary is not statically linked"; exit 1; }
+
+      - name: Run the binary on the examples
+        env:
+          EXE: ${{ matrix.exe }}
+        run: bash .github/scripts/quickstart.sh "$V" "target/$TARGET/release/covenant$EXE"
+
+      - name: Package
+        id: package
+        env:
+          EXE: ${{ matrix.exe }}
+        run: |
+          set -euo pipefail
+          archive="$(bash .github/scripts/package.sh "$TARGET" "target/$TARGET/release/covenant$EXE" dist)"
+          # Relative: on Windows the script's absolute path is bash's (/d/a/…), which
+          # the upload below would not find.
+          echo "archive=dist/$(basename "$archive")" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: covenant-${{ matrix.target }}
+          path: ${{ steps.package.outputs.archive }}
+          if-no-files-found: error
+
+  crate:
+    name: the crate and its SBOM
+    needs: plan
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      # crates.io takes the package, not the repository: a file the package leaves
+      # out breaks every `cargo install`, and a version cannot be taken back. The
+      # dry run builds the crate from its package alone, as crates.io's users will.
+      - name: Package the crate as crates.io takes it
+        run: |
+          set -euo pipefail
+          cargo package --list --locked
+          cargo publish --dry-run --locked
+
+      - uses: taiki-e/install-action@07b4745e0c39a41822af610387492e3e53aa222b # v2.83.4
+        with:
+          tool: cargo-cyclonedx
+
+      # What the binaries are built from: the default features, for every target
+      # (windows-sys, say, is in the Windows binary only), build tools included.
+      - name: The SBOM (CycloneDX)
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          cargo cyclonedx --format json --spec-version 1.5 --describe binaries --target all
+          # One SBOM per binary, and the crate has one: `covenant`.
+          sboms=(./*.cdx.json)
+          [ "${#sboms[@]}" -eq 1 ] || { echo "::error::expected one SBOM, found: ${sboms[*]}"; exit 1; }
+          mkdir -p sbom
+          mv "${sboms[0]}" sbom/covenant.cdx.json
+          jq -r '"\(.metadata.component.name) \(.metadata.component.version): \(.components | length) components"' sbom/covenant.cdx.json
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: sbom
+          path: sbom/covenant.cdx.json
+          if-no-files-found: error
+
+  release:
+    name: sign, attest and publish
+    needs: [plan, binaries, crate, image]
+    if: needs.plan.outputs.mode != 'dry-run'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write     # create the release (a release run only)
+      id-token: write     # the job's OIDC identity is what signs: keyless cosign and the provenance
+      attestations: write # store the build-provenance attestation
+    env:
+      V: ${{ needs.plan.outputs.version }}
+      MODE: ${{ needs.plan.outputs.mode }}
+      PRE: ${{ needs.plan.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: dist
+          pattern: covenant-*
+          merge-multiple: true
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: sbom
+          path: dist
+
+      - name: Checksums
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          # Five archives, one per target, and the SBOM: a missing one stops here.
+          archives=(covenant-*.tar.gz covenant-*.zip)
+          [ "${#archives[@]}" -eq 5 ] || {
+            echo "::error::expected 5 archives, found ${#archives[@]}:"; ls -l; exit 1; }
+          sha256sum "${archives[@]}" covenant.cdx.json > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Attest how each file was built (SLSA provenance)
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-path: |
+            dist/covenant-*.tar.gz
+            dist/covenant-*.zip
+            dist/covenant.cdx.json
+
+      - uses: sigstore/cosign-installer@ba7bc0a3fef59531c69a25acd34668d6d3fe6f22 # v4.1.0
+        with:
+          # Pinned: the commands below, and the ones SECURITY.md gives users, were
+          # checked against this release. Read its notes before a bump.
+          cosign-release: "v3.1.3"
+
+      # One Sigstore bundle beside each archive: the signature, its certificate and
+      # the transparency-log entry, all that `cosign verify-blob` needs offline.
+      - name: Sign each archive (keyless)
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          for archive in covenant-*.tar.gz covenant-*.zip; do
+            cosign sign-blob --yes --bundle "$archive.sigstore.json" "$archive"
+          done
+
+      - name: Verify the signatures and the provenance, as SECURITY.md tells users to
+        working-directory: dist
+        env:
+          # Exactly who signed: this repository, this workflow file, this ref.
+          IDENTITY: https://github.com/${{ github.workflow_ref }}
+          REPO: ${{ github.repository }}
+          RUN_REF: ${{ github.ref }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          issuer="https://token.actions.githubusercontent.com"
+          # Not just "some workflow in this repository": this workflow, at this ref.
+          workflow="${GITHUB_WORKFLOW_REF%@*}"   # owner/repo/.github/workflows/release.yml
+          # Retried: the attestations were written a moment ago, and the API that
+          # serves them does not always have them at once.
+          retry() {   # retry <what> <command...>
+            local what="$1"; shift
+            for attempt in 1 2 3 4 5 6; do
+              if "$@" > /dev/null 2>&1; then echo "$what verified"; return 0; fi
+              if [ "$attempt" = 6 ]; then
+                # Once more, unsuppressed, so the log carries the tool's own diagnosis.
+                if "$@"; then echo "$what verified"; return 0; fi
+                echo "::error::$what does not verify"
+                return 1
+              fi
+              echo "$what not visible yet (attempt $attempt); waiting $((attempt * 3))s"
+              sleep $((attempt * 3))
+            done
+          }
+          sha256sum -c SHA256SUMS
+          for archive in covenant-*.tar.gz covenant-*.zip; do
+            cosign verify-blob "$archive" --bundle "$archive.sigstore.json" \
+              --certificate-identity "$IDENTITY" --certificate-oidc-issuer "$issuer"
+          done
+          for file in covenant-*.tar.gz covenant-*.zip covenant.cdx.json; do
+            retry "The build provenance of $file, from $workflow at $RUN_REF" \
+              gh attestation verify "$file" --repo "$REPO" \
+                --signer-workflow "$workflow" --source-ref "$RUN_REF"
+          done
+
+      - name: Publish the GitHub Release
+        if: needs.plan.outputs.mode == 'release'
+        env:
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="v$V"
+          state="$(gh release view "$tag" --repo "$REPO" --json isDraft \
+            --jq 'if .isDraft then "draft" else "published" end' 2>/dev/null || echo none)"
+          if [ "$state" = "published" ]; then
+            # A published release keeps the files it was published with. The jobs after
+            # this one read them from the release, never from this run's builds.
+            echo "::notice::$tag is already published; its files stay as they are"
+            exit 0
+          fi
+          if [ "$state" = "draft" ]; then
+            gh release delete "$tag" --repo "$REPO" --yes   # left by a run that stopped before publishing
+          fi
+          notes="$RUNNER_TEMP/notes.md"
+          awk -v v="$V" '$1 == "##" { if (found) exit; found = ($2 == v); next } found' CHANGELOG.md > "$notes"
+          cat >> "$notes" <<EOF
+
+          ---
+
+          Each archive is signed (keyless, the \`.sigstore.json\` beside it) and carries build provenance, and \`covenant.cdx.json\` is the SBOM. [SECURITY.md](https://github.com/$REPO/blob/$tag/SECURITY.md#releases) has the commands that check them.
+          EOF
+          pre=()
+          [ "$PRE" = "true" ] && pre=(--prerelease)
+          # A draft first, then every file, then publish: an immutable release takes
+          # no file once it is published.
+          gh release create "$tag" --repo "$REPO" --verify-tag --draft \
+            --title "covenant $V" --notes-file "$notes" "${pre[@]}" \
+            dist/covenant-*.tar.gz dist/covenant-*.zip dist/*.sigstore.json \
+            dist/covenant.cdx.json dist/SHA256SUMS
+          latest=(--latest)
+          [ "$PRE" = "true" ] && latest=(--latest=false)
+          gh release edit "$tag" --repo "$REPO" --draft=false "${latest[@]}"
+          echo "Published https://github.com/$REPO/releases/tag/$tag"
+
+      - name: Summary
+        env:
+          REPO: ${{ github.repository }}
+        run: |
+          {
+            if [ "$MODE" = "release" ]; then
+              echo "Released [v$V](https://github.com/$REPO/releases/tag/v$V): five archives, each signed and attested, their SHA256SUMS and the SBOM."
+            else
+              echo "Rehearsal: built, attested, signed and verified five archives and the SBOM of $V. Nothing was published."
+            fi
+            echo ""
+            echo '```'
+            cat dist/SHA256SUMS
+            echo '```'
+            echo ""
+            echo "Check an archive as a user would (SECURITY.md):"
+            echo ""
+            echo '```bash'
+            echo "cosign verify-blob covenant-x86_64-unknown-linux-musl.tar.gz \\"
+            echo "  --bundle covenant-x86_64-unknown-linux-musl.tar.gz.sigstore.json \\"
+            echo "  --certificate-identity https://github.com/${GITHUB_WORKFLOW_REF} \\"
+            echo "  --certificate-oidc-issuer https://token.actions.githubusercontent.com"
+            echo "gh attestation verify covenant-x86_64-unknown-linux-musl.tar.gz --repo ${REPO} \\"
+            echo "  --signer-workflow ${GITHUB_WORKFLOW_REF%@*} --source-ref ${GITHUB_REF}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  crates-io:
+    name: covenant-data on crates.io
+    needs: [plan, release]
+    # A version on crates.io cannot be taken back, so only a stable release goes
+    # there, and only from this repository.
+    if: needs.plan.outputs.mode == 'release' && needs.plan.outputs.prerelease == 'false' && github.repository == 'lucheeseng827/covenant'
+    runs-on: ubuntu-24.04
+    # CRATESIO_TOKEN is an environment secret on `cicd`.
+    environment: cicd
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      - name: Publish, once per version
+        env:
+          V: ${{ needs.plan.outputs.version }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATESIO_TOKEN }}
+        run: |
+          set -euo pipefail
+          # crates.io refuses an API call that names no User-Agent.
+          ua="covenant-release (https://github.com/lucheeseng827/covenant)"
+          listed() { curl -sf -A "$ua" "https://crates.io/api/v1/crates/covenant-data/$V" > /dev/null; }
+          if listed; then
+            echo "covenant-data $V is already on crates.io; nothing to do"
+            exit 0
+          fi
+          if [ -z "$CARGO_REGISTRY_TOKEN" ]; then
+            echo "::error::CRATESIO_TOKEN is not set on this repository's cicd environment, so covenant-data $V cannot be published. Set it (a crates.io token that may publish covenant-data), then re-run this job."
+            exit 1
+          fi
+          cargo publish --locked
+          for _ in $(seq 1 30); do
+            if listed; then echo "covenant-data $V is on crates.io"; exit 0; fi
+            sleep 10
+          done
+          echo "::error::covenant-data $V was published, but crates.io has not listed it after 5 minutes"
+          exit 1
+
+  homebrew:
+    name: the Homebrew formula
+    needs: [plan, binaries, release]
+    # After the release when there is one (the formula names its files), and without
+    # it in a dry-run, which has none.
+    if: ${{ !cancelled() && needs.binaries.result == 'success' && (needs.release.result == 'success' || (needs.release.result == 'skipped' && needs.plan.outputs.mode == 'dry-run')) }}
+    runs-on: macos-15
+    permissions:
+      contents: write # commit Formula/covenant.rb to main (a stable release only)
+    env:
+      V: ${{ needs.plan.outputs.version }}
+      MODE: ${{ needs.plan.outputs.mode }}
+      PRE: ${{ needs.plan.outputs.prerelease }}
+      REPO: ${{ github.repository }}
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+      HOMEBREW_NO_ENV_HINTS: "1"
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      # A release's formula names the release's own files, so it is written from
+      # them. Anything else installs this run's builds from disk.
+      - name: The archives from the release
+        if: needs.plan.outputs.mode == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download "v$V" --repo "$REPO" --pattern 'covenant-*.tar.gz' --dir dist
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        if: needs.plan.outputs.mode != 'release'
+        with:
+          path: dist
+          pattern: covenant-*
+          merge-multiple: true
+
+      - name: Write the formula
+        run: |
+          set -euo pipefail
+          if [ "$MODE" = "release" ]; then
+            url="https://github.com/$REPO/releases/download/v$V"
+          else
+            url="file://$PWD/dist"
+          fi
+          bash .github/scripts/formula.sh "$V" "$url" dist > covenant.rb
+          cat covenant.rb
+
+      # Homebrew installs formulae from taps only: a local one holds this formula
+      # until it has passed.
+      - name: Install it and test it
+        run: |
+          set -euo pipefail
+          brew tap-new --no-git covenant-release/local
+          cp covenant.rb "$(brew --repository covenant-release/local)/Formula/covenant.rb"
+          brew install covenant-release/local/covenant
+          brew test covenant-release/local/covenant
+          bash .github/scripts/quickstart.sh "$V" "$(brew --prefix)/bin/covenant"
+
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        if: needs.plan.outputs.mode == 'release' && needs.plan.outputs.prerelease == 'false' && github.repository == 'lucheeseng827/covenant'
+        with:
+          ref: main
+          path: tap
+          persist-credentials: false
+
+      # The formula lives on main, which makes this repository a tap:
+      #   brew tap lucheeseng827/covenant https://github.com/lucheeseng827/covenant
+      - name: Commit it to main
+        if: needs.plan.outputs.mode == 'release' && needs.plan.outputs.prerelease == 'false' && github.repository == 'lucheeseng827/covenant'
+        working-directory: tap
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p Formula
+          cp ../covenant.rb Formula/covenant.rb
+          git add Formula/covenant.rb
+          if git diff --cached --quiet; then
+            echo "Formula/covenant.rb is already the formula of $V"
+            exit 0
+          fi
+          git -c user.name="github-actions[bot]" \
+            -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -m "Formula: covenant $V"
+          # The checkout kept no credentials. The token goes to this one push as a
+          # header, never into .git/config or the remote URL.
+          auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')"
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${auth}" push origin HEAD:main
+
   image:
+    name: the image
+    needs: plan
     runs-on: ubuntu-24.04
     # DOCKER_USERNAME / DOCKER_PASSWORD are environment secrets on `cicd`, so the
     # job must declare the environment for `secrets.*` to resolve at all.
@@ -124,8 +650,14 @@ jobs:
             # The signature and the attestation name the image fully qualified;
             # Docker Hub's registry is index.docker.io.
             SUBJECT="index.docker.io/${IMAGE}"
-            # Never fail a run that simply has no credentials — build, skip the push.
+            # A fork's run that simply has no credentials builds and skips the push, so a
+            # contributor is never blocked on them. Here it fails instead: the GitHub
+            # Release waits for this job, so the release does not go out without its image.
             if [ "$PUSH" = "true" ] && [ "$HAS_CREDS" != "true" ]; then
+              if [ "$GITHUB_REPOSITORY" = "lucheeseng827/covenant" ]; then
+                echo "::error::DOCKER_USERNAME / DOCKER_PASSWORD are not set on this repository's cicd environment, so ${IMAGE}:${V} cannot be pushed, and nothing of $V is published without it. Set them (a Docker Hub access token with Read/Write on ${IMAGE}), then re-run the failed jobs."
+                exit 1
+              fi
               echo "::warning::DOCKER_USERNAME / DOCKER_PASSWORD are not set on this repository; building without pushing."
               PUSH="false"
             fi
@@ -289,6 +821,13 @@ jobs:
           code=$?
           set -e
           [ "$code" = "1" ] || { echo "::error::image exited $code on violating data, expected 1"; exit 1; }
+          # And write, as the overview documents it (run as the directory's owner): every
+          # check above only reads, which is how a quick start whose `infer --out` and
+          # `gate --dlq` could not write into the mount shipped unnoticed.
+          docker run --rm -u "$(id -u):$(id -g)" -v "$PWD:/w" "$REF" \
+            infer /w/examples/data/orders.ndjson --out /w/smoke-draft.yaml
+          [ -s smoke-draft.yaml ] || { echo "::error::infer --out wrote nothing into the mount"; exit 1; }
+          rm -f smoke-draft.yaml
           echo "Image smoke test passed."
 
       # The Docker Hub overview is the first thing most people read, and a stale
@@ -338,3 +877,86 @@ jobs:
               echo "Dry-run: built \`${IMAGE}:${V}\` (${PLATFORMS}), not pushed."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # The release as a user gets it: installed on a fresh runner from each channel it
+  # was published to, then made to run the README quickstart. A channel that does not
+  # work from a clean machine fails the release here, not in someone's first minute.
+  installs:
+    name: ${{ matrix.how }} (${{ matrix.os }})
+    needs: [plan, crates-io, homebrew, image]
+    if: needs.plan.outputs.mode == 'release' && needs.plan.outputs.prerelease == 'false' && github.repository == 'lucheeseng827/covenant'
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { how: cargo install,  os: ubuntu-24.04 }
+          - { how: cargo binstall, os: ubuntu-24.04 }
+          - { how: cargo binstall, os: macos-15 }
+          - { how: cargo binstall, os: windows-2022 }
+          - { how: brew install,   os: macos-15 }
+          - { how: brew install,   os: ubuntu-24.04 }
+          - { how: docker run,     os: ubuntu-24.04 }
+    defaults:
+      run:
+        shell: bash
+    env:
+      V: ${{ needs.plan.outputs.version }}
+      HOW: ${{ matrix.how }}
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+      HOMEBREW_NO_ENV_HINTS: "1"
+    steps:
+      - name: Check out with the repository's own line endings
+        if: runner.os == 'Windows'
+        run: git config --global core.autocrlf false
+
+      # For examples/ and the quickstart script only: nothing is built from it.
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - uses: taiki-e/install-action@07b4745e0c39a41822af610387492e3e53aa222b # v2.83.4
+        if: matrix.how == 'cargo binstall'
+        with:
+          tool: cargo-binstall
+
+      - name: Install covenant with ${{ matrix.how }}
+        run: |
+          set -euo pipefail
+          case "$HOW" in
+            "cargo install")
+              # Compiles covenant-data $V from crates.io, as its page says to.
+              cargo install covenant-data --version "$V" --locked
+              echo "COVENANT=covenant" >> "$GITHUB_ENV"
+              ;;
+            "cargo binstall")
+              # The release's archive for this machine, found through the binstall
+              # metadata in the published crate. Nothing else: a third-party build or
+              # a compile would hide metadata that does not work.
+              cargo binstall covenant-data --version "$V" --no-confirm \
+                --disable-strategies quick-install,compile
+              echo "COVENANT=covenant" >> "$GITHUB_ENV"
+              ;;
+            "brew install")
+              if ! command -v brew > /dev/null; then
+                eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"   # Linux runners: installed, not on PATH
+              fi
+              brew tap lucheeseng827/covenant https://github.com/lucheeseng827/covenant
+              brew install lucheeseng827/covenant/covenant
+              brew test lucheeseng827/covenant/covenant
+              echo "COVENANT=$(brew --prefix)/bin/covenant" >> "$GITHUB_ENV"
+              ;;
+            "docker run")
+              docker pull "$IMAGE:$V"
+              # As docs/DOCKERHUB.md runs it: as the checkout's owner, so `infer --out` can write.
+              echo "COVENANT=docker run --rm -u $(id -u):$(id -g) -v $PWD:/w -w /w $IMAGE:$V" >> "$GITHUB_ENV"
+              ;;
+          esac
+
+      - name: Run the quickstart
+        run: |
+          set -euo pipefail
+          read -r -a covenant <<< "$COVENANT"
+          bash .github/scripts/quickstart.sh "$V" "${covenant[@]}"

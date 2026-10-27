@@ -275,10 +275,13 @@ a row-only embedder builds without it and links no Arrow, which matters to
 the stream-processor plugins, whose hosts pin their own Arrow; everything else is small pure-Rust
 (serde/regex/semver/chrono/indexmap). No async runtime — every enforcement
 point is a synchronous loop, which is exactly what CI steps and pipe
-interceptors want. The two C dependencies sit behind off-by-default features
-so the default build needs no C toolchain: `kafka` builds librdkafka (with
-vendored OpenSSL and zstd) from source, and the default build never compiles
-it.
+interceptors want. The heavy C sits behind the off-by-default `kafka`
+feature, which builds librdkafka (with vendored OpenSSL and zstd) from
+source; the default build never compiles it. The default build compiles one
+small piece of C and assembly, `ring`, the cryptography under the TLS that
+sends reports (`send`), so it needs a C compiler for its target (`musl-gcc`
+for the static musl builds); a row-only embedder built with
+`default-features = false` links none of it.
 
 ## Known limits (v0.1)
 

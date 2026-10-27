@@ -4,8 +4,8 @@
 
 - **Image:** `mancube/covenant` — static musl binary on **distroless/static**, runs as **nonroot** (uid `65532`), no shell, no package manager. ~8 MB.
 - **Arch:** `linux/amd64`, `linux/arm64` · **Binary inside:** `/usr/local/bin/covenant` (entrypoint)
-- **Build:** pure Rust, zero Python/C/C++. Arrow, Parquet and the regex/semver stack are all pure-Rust, so the whole matrix builds without a C toolchain.
-- **No network access on any code path.** No telemetry, no update check, no phone-home. There is no flag to turn off.
+- **Build:** Rust. Arrow, Parquet and the regex/semver stack are pure Rust; the only C is `ring`, the cryptography under the TLS that sends reports.
+- **No network access you did not ask for.** No telemetry, no update check, no phone-home. The only outbound connections are the ones a flag names: the URL a run's report goes to (`--report-to`, `covenant push`, `--openlineage`).
 - **Source / full docs:** [github.com/lucheeseng827/covenant](https://github.com/lucheeseng827/covenant) · Apache-2.0
 
 ## Tags
@@ -37,7 +37,7 @@ commands that check an image before you run it are in
 
 ## Quick start
 
-The binary is the entrypoint, so the `docker` args are just `covenant` subcommands. Everything is local file I/O, so mount the directory holding your contract and data:
+The binary is the entrypoint, so the `docker` args are just `covenant` subcommands. Everything is local file I/O, so mount the directory holding your contract and data, and run as its owner (`-u`): `infer --out` and `gate --dlq` write into it, which the image's own uid cannot do in a directory it does not own (see [Running as nonroot](#running-as-nonroot)):
 
 ```bash
 docker run --rm mancube/covenant:0.2.0 --version
@@ -46,7 +46,7 @@ docker run --rm mancube/covenant:0.2.0 --version
 **1. Draft a contract from data you already have.** Nobody writes their first contract from a blank page:
 
 ```bash
-docker run --rm -v "$PWD:/w" mancube/covenant:0.2.0 \
+docker run --rm -u "$(id -u):$(id -g)" -v "$PWD:/w" mancube/covenant:0.2.0 \
   infer /w/exports/orders.parquet --out /w/orders.yaml
 ```
 
@@ -55,13 +55,13 @@ The draft is honest about its evidence: types, presence and nullability become r
 **2. Lint the contract.** `validate` refuses a contract it could not enforce, so a bad contract fails here rather than half-enforcing later:
 
 ```bash
-docker run --rm -v "$PWD:/w" mancube/covenant:0.2.0 validate /w/orders.yaml
+docker run --rm -u "$(id -u):$(id -g)" -v "$PWD:/w" mancube/covenant:0.2.0 validate /w/orders.yaml
 ```
 
 **3. Gate a file in CI.** This is the whole integration — exit 1 fails the job:
 
 ```bash
-docker run --rm -v "$PWD:/w" mancube/covenant:0.2.0 \
+docker run --rm -u "$(id -u):$(id -g)" -v "$PWD:/w" mancube/covenant:0.2.0 \
   check /w/exports/orders.parquet -c /w/orders.yaml
 ```
 
@@ -83,7 +83,7 @@ FAIL  /w/exports/orders.ndjson  [orders v1.2.0, model orders]
 **4. Block the pull request that breaks the contract.** `diff` runs on two YAML files — no data path, no credentials — which makes it the cheapest thing to adopt first:
 
 ```bash
-docker run --rm -v "$PWD:/w" mancube/covenant:0.2.0 \
+docker run --rm -u "$(id -u):$(id -g)" -v "$PWD:/w" mancube/covenant:0.2.0 \
   diff /w/main/orders.yaml /w/pr/orders.yaml --fail-on breaking
 ```
 
@@ -93,7 +93,7 @@ It classifies every change as **breaking**, **risky** or **info**, says whether 
 
 ```bash
 kcat -C -t orders_raw -e \
-  | docker run -i --rm -v "$PWD:/w" mancube/covenant:0.2.0 \
+  | docker run -i --rm -u "$(id -u):$(id -g)" -v "$PWD:/w" mancube/covenant:0.2.0 \
       gate -c /w/orders.yaml --dlq /w/orders.dlq.ndjson \
   | kcat -P -t orders_validated
 ```
@@ -112,7 +112,7 @@ Never conflate 1 and 2. A pipeline that treats "the run crashed" as "the data wa
 
 ## Running as nonroot
 
-The image runs as uid `65532` with no shell. Mounted paths must be readable by that uid, and any directory it writes to (a `--dlq` target, an `--out` path) must be writable by it:
+The image runs as uid `65532` with no shell. Mounted paths must be readable by the user it runs as, and any directory it writes to (a `--dlq` target, an `--out` path) must be writable by it. uid 65532 owns nothing on your machine or a CI runner, so without `-u` those writes fail with `Permission denied` (exit 2). Every command above runs as the mounted directory's owner for that reason:
 
 ```bash
 docker run --rm -u "$(id -u):$(id -g)" -v "$PWD:/w" mancube/covenant:0.2.0 \

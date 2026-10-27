@@ -1,9 +1,9 @@
 # covenant — distroless image for the `covenant` enforcement runtime.
 #
-# The build is pure-Rust with zero C/C++ deps (arrow/parquet, serde, regex are all
-# pure-Rust), so the binary links fully static against musl (Alpine's native target)
-# and drops into `distroless/static` — no libc, no shell, no package manager, runs as
-# nonroot. Multi-arch (linux/amd64 + linux/arm64) via `docker buildx`:
+# The build is Rust but for `ring` (the TLS under `--report-to`), whose bit of C
+# Alpine's gcc compiles, so the binary links fully static against musl (Alpine's
+# native target) and drops into `distroless/static` — no libc, no shell, no package
+# manager, runs as nonroot. Multi-arch (linux/amd64 + linux/arm64) via `docker buildx`:
 #
 #   docker buildx build --platform linux/amd64,linux/arm64 -t mancube/covenant .
 #

@@ -106,6 +106,33 @@ a data check — `--as-consumer` refuses it outright rather than validating
 fields that no longer exist. The served API exposes the same verdicts at
 `POST /v1/consumers/verify`.
 
+## Install
+
+From the release after 0.2.0, every release is one static binary, `covenant`, for Linux
+(x86_64 and aarch64), macOS (arm64 and x86_64) and Windows (x86_64), on its
+[GitHub Release](https://github.com/lucheeseng827/covenant/releases): each archive is signed
+and carries build provenance, and [`SECURITY.md`](SECURITY.md#releases) has the commands that
+check them.
+
+```bash
+# Homebrew (macOS, Linux): this repository is the tap
+brew tap lucheeseng827/covenant https://github.com/lucheeseng827/covenant
+brew install lucheeseng827/covenant/covenant
+
+# the release's binary for this machine, through cargo (cargo-binstall)
+cargo binstall covenant-data
+
+# from source, on crates.io
+cargo install --locked covenant-data
+
+# the image, from Docker Hub
+docker run --rm mancube/covenant:<version> --version
+```
+
+Or download `covenant-<target>.tar.gz` (`.zip` for Windows) from the release: one directory
+holding `covenant`, its `LICENSE` and its `NOTICE`. The package is `covenant-data`; the command
+and the Rust library are `covenant`.
+
 ## Quickstart
 
 ```bash
